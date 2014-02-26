@@ -5,6 +5,15 @@
   "main": "pio.js",
   "dependencies": {
     "commander": "~2.1.0",
-    "colors": "~0.6.2"
+    "colors": "~0.6.2",
+    "dnode": "~1.2.0",
+    "q": "~1.0.0",
+    "request": "~2.33.0"
+  },
+  "devDependencies": {
+    "mocha": "~1.17.1"
+  },
+  "scripts": {
+    "test": "node_modules/.bin/mocha --reporter list pio.test.js"
   }
 }
