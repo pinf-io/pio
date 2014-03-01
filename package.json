@@ -7,6 +7,7 @@
     "commander": "~2.1.0",
     "colors": "~0.6.2",
     "dnode": "~1.2.0",
+    "require.async": "~0.1.1",
     "q": "~1.0.0",
     "request": "~2.33.0",
     "fs-extra": "~0.8.1",

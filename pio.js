@@ -1,4 +1,6 @@
 
+require("require.async")(require);
+
 const ASSERT = require("assert");
 const PATH = require("path");
 const FS = require("fs-extra");
@@ -200,26 +202,11 @@ PIO.prototype.deploy = function(serviceAlias, options) {
         var serviceConfig = self._config.provides[serviceAlias];
 
         ASSERT.equal(typeof self._config.config.pio.hostname, "string");
+        ASSERT.equal(typeof self._config.config.pio.public_ip, "string");
         ASSERT.equal(typeof self._config.config.pio.keyPath, "string");
         ASSERT.equal(typeof self._config.config.pio.user, "string");
         ASSERT.equal(typeof self._config.config.pio.servicesPath, "string");
         ASSERT.equal(typeof self._config.config.pio.targetBasePath, "string");
-
-        var sourcePath = null;
-        if (serviceConfig.sourcePath) {
-            sourcePath = PATH.join(self._configPath, "..", serviceConfig.sourcePath);
-        } else {
-            sourcePath = PATH.join(self._configPath, "..", self._config.config.pio.servicesPath, serviceAlias);
-        }
-        if (!FS.existsSync(sourcePath)) throw new Error("Source path '" + sourcePath + "' does not exist!");
-
-        var targetPath = null;
-        if (serviceConfig.targetPath) {
-            targetPath = serviceConfig.targetPath;
-        } else {
-            targetPath = PATH.join(self._config.config.pio.targetBasePath, serviceAlias);
-        }
-        var ignoreRulesPath = PATH.join(sourcePath, ".deployignore");
 
         serviceConfig = DEEPCOPY(serviceConfig);
         // Update service config to be relevant in new context.
@@ -240,42 +227,106 @@ PIO.prototype.deploy = function(serviceAlias, options) {
         serviceConfig.config = DEEPMERGE(serviceConfig.config || {}, serviceConfig["config[" + self._config.config.pio.hostname + "]"] || {});
         delete serviceConfig["config[" + self._config.config.pio.hostname + "]"];
 
+        if (!serviceConfig.pio) {
+            serviceConfig.pio = {};
+        }
+
+        if (serviceConfig.pio.sourcePath) {
+            serviceConfig.pio.sourcePath = PATH.join(self._configPath, "..", serviceConfig.pio.sourcePath);
+        } else {
+            serviceConfig.pio.sourcePath = PATH.join(self._configPath, "..", self._config.config.pio.servicesPath, serviceAlias);
+        }
+        if (!FS.existsSync(serviceConfig.pio.sourcePath)) throw new Error("Source path '" + serviceConfig.pio.sourcePath + "' does not exist!");
+
+        if (serviceConfig.targetPath) {
+            serviceConfig.pio.targetPath = serviceConfig.targetPath;
+        } else {
+            serviceConfig.pio.targetPath = PATH.join(self._config.config.pio.targetBasePath, serviceAlias);
+        }
+
+        serviceConfig.pio.public_ip = options.public_ip || self._config.config.pio.public_ip || null;
+
+
         console.log(("Staring service with config: " + JSON.stringify(serviceConfig, null, 4)).cyan);
 
-        return RSYNC.sync({
-            sourcePath: sourcePath,
-            targetUser: self._config.config.pio.user,
-            targetHostname: options.hostname || self._config.config.pio.hostname,
-            targetPath: targetPath,
-            keyPath: self._config.config.pio.keyPath,
-            excludeFromPath: FS.existsSync(ignoreRulesPath) ? ignoreRulesPath : null
-        }).then(function() {
-            return SSH.uploadFile({
-                targetUser: self._config.config.pio.user,
-                targetHostname: options.hostname || self._config.config.pio.hostname,
-                source: JSON.stringify(serviceConfig, null, 4),
-                targetPath: PATH.join(targetPath, "pio.json"),
-                keyPath: self._config.config.pio.keyPath
-            }).then(function() {
-                var commands = [];
-                for (var name in self._config.env) {
-                    commands.push('echo "Setting \'"' + name + '"\' to \'"' + self._config.env[name] + '"\'"');
-                    commands.push('export ' + name + '=' + self._config.env[name]);
-                }
-                for (var name in serviceConfig.env) {
-                    commands.push('echo "Setting \'"' + name + '"\' to \'"' + serviceConfig.env[name] + '"\'"');
-                    commands.push('export ' + name + '=' + serviceConfig.env[name]);
-                }
-                commands.push('echo "Calling postdeploy script:"');
-                commands.push(serviceConfig.postdeploy);
-                return SSH.runRemoteCommands({
-                    targetUser: self._config.config.pio.user,
-                    targetHostname: options.hostname || self._config.config.pio.hostname,
-                    commands: commands,
-                    workingDirectory: targetPath,
-                    keyPath: self._config.config.pio.keyPath
+        var helpers = {
+            RSYNC: RSYNC,
+            SSH: SSH
+        };
+
+        function getDeployPlugin() {
+
+            var defaultDeployPlugin = function(pio, serviceConfig) {
+
+                var ignoreRulesPath = PATH.join(serviceConfig.pio.sourcePath, ".deployignore");
+
+                return RSYNC.sync({
+                    sourcePath: serviceConfig.pio.sourcePath,
+                    targetUser: pio._config.config.pio.user,
+                    targetHostname: serviceConfig.pio.public_ip,
+                    targetPath: serviceConfig.pio.targetPath,
+                    keyPath: pio._config.config.pio.keyPath,
+                    excludeFromPath: FS.existsSync(ignoreRulesPath) ? ignoreRulesPath : null
+                }).then(function() {
+                    return SSH.uploadFile({
+                        targetUser: pio._config.config.pio.user,
+                        targetHostname: serviceConfig.pio.public_ip,
+                        source: JSON.stringify(serviceConfig, null, 4),
+                        targetPath: PATH.join(serviceConfig.pio.targetPath, "pio.json"),
+                        keyPath: pio._config.config.pio.keyPath
+                    }).then(function() {
+                        var commands = [];
+                        for (var name in pio._config.env) {
+                            commands.push('echo "Setting \'"' + name + '"\' to \'"' + pio._config.env[name] + '"\'"');
+                            commands.push('export ' + name + '=' + pio._config.env[name]);
+                        }
+                        for (var name in serviceConfig.env) {
+                            commands.push('echo "Setting \'"' + name + '"\' to \'"' + serviceConfig.env[name] + '"\'"');
+                            commands.push('export ' + name + '=' + serviceConfig.env[name]);
+                        }
+                        commands.push('echo "Calling postdeploy script:"');
+                        commands.push(serviceConfig.postdeploy);
+                        return SSH.runRemoteCommands({
+                            targetUser: pio._config.config.pio.user,
+                            targetHostname: serviceConfig.pio.public_ip,
+                            commands: commands,
+                            workingDirectory: serviceConfig.pio.targetPath,
+                            keyPath: pio._config.config.pio.keyPath
+                        });
+                    });
                 });
+            }
+            function readDescriptor() {
+                var path = PATH.join(serviceConfig.pio.sourcePath, "package.json");
+                return Q.denodeify(function(callback) {
+                    return FS.exists(path, function(exists) {
+                        if (!exists) return callback(null, null);
+                        return FS.readJson(path, callback);
+                    });
+                })();
+            }
+            return readDescriptor().then(function(descriptor) {
+                if (descriptor && descriptor.pm) {
+                    return Q.denodeify(function(callback) {                        
+                        return require.async("../" + descriptor.pm, function(api) {
+                            try {
+
+                                ASSERT.equal(typeof api.deploy, "function");
+
+                                return api.deploy(self, serviceConfig, helpers);
+
+                            } catch(err) {
+                                return callback(err);
+                            }
+                        }, callback);
+                    })();
+                }
+                return Q.resolve(defaultDeployPlugin);
             });
+        }
+
+        return getDeployPlugin().then(function(plugin) {
+            return plugin(self, serviceConfig);
         });
     });
 }
