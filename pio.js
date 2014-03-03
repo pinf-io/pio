@@ -220,11 +220,8 @@ PIO.prototype._deployBootServices = function(options) {
     return done;
 }
 
-PIO.prototype.deploy = function(serviceAlias, options) {
+PIO.prototype._normalizeServiceConfig = function(serviceAlias) {
     var self = this;
-     options = options || {};
-    // TODO: Only deploy if source has changed (call server to check hash)
-    //       or if force is set.
     return self._ready.then(function() {
         if (!self._config.provides || !self._config.provides[serviceAlias]) {
             throw ("Service with alias '" + serviceAlias + "' not found in 'pio.json ~ provides[" + serviceAlias + "]'!");
@@ -288,6 +285,17 @@ PIO.prototype.deploy = function(serviceAlias, options) {
         } else {
             serviceConfig.config.pio.plantPath = PATH.join(serviceConfig.config.pio.plantBasePath, serviceAlias);
         }
+
+        return serviceConfig;
+    });
+}
+
+
+PIO.prototype.deploy = function(serviceAlias) {
+    var self = this;
+    // TODO: Only deploy if source has changed (call server to check hash)
+    //       or if force is set.
+    return self._normalizeServiceConfig(serviceAlias).then(function(serviceConfig) {
 
         console.log(("Deploy service with config: " + JSON.stringify(serviceConfig, null, 4)).cyan);
 
@@ -407,6 +415,74 @@ PIO.prototype.deploy = function(serviceAlias, options) {
     });
 }
 
+PIO.prototype.test = function(serviceAlias) {
+    var self = this;
+    return self._normalizeServiceConfig(serviceAlias).then(function(serviceConfig) {
+
+        console.log(("Calling 'test.sh' at: " + serviceConfig.config.pio.seedPath).magenta);
+
+        return Q.denodeify(function(callback) {
+            var proc = SPAWN("sh", [
+                "test.sh"
+            ], {
+                cwd: serviceConfig.config.pio.seedPath,
+                env: {
+                    PATH: process.env.PATH,
+                    PIO_PUBLIC_IP: serviceConfig.config.pio.publicIP,
+                    PORT: serviceConfig.env.PORT
+                }
+            });
+            proc.stdout.on('data', function (data) {
+                process.stdout.write(data);
+            });
+            proc.stderr.on('data', function (data) {
+                process.stderr.write(data);
+            });
+            proc.on('close', function (code) {
+                if (code !== 0) {
+                    console.error("ERROR: Script exited with code '" + code + "'");
+                    return callback(new Error("Script exited with code '" + code + "'"));
+                }
+                return callback(null);
+            });
+        })();
+    });
+}
+
+PIO.prototype.status = function(serviceAlias) {
+    var self = this;
+    return self._normalizeServiceConfig(serviceAlias).then(function(serviceConfig) {
+
+        console.log(("Calling 'status.sh' at: " + serviceConfig.config.pio.seedPath).magenta);
+
+        return Q.denodeify(function(callback) {
+            var proc = SPAWN("sh", [
+                "status.sh"
+            ], {
+                cwd: serviceConfig.config.pio.seedPath,
+                env: {
+                    PATH: process.env.PATH,
+                    PIO_PUBLIC_IP: serviceConfig.config.pio.publicIP,
+                    PORT: serviceConfig.env.PORT
+                }
+            });
+            proc.stdout.on('data', function (data) {
+                process.stdout.write(data);
+            });
+            proc.stderr.on('data', function (data) {
+                process.stderr.write(data);
+            });
+            proc.on('close', function (code) {
+                if (code !== 0) {
+                    console.error("ERROR: Script exited with code '" + code + "'");
+                    return callback(new Error("Script exited with code '" + code + "'"));
+                }
+                return callback(null);
+            });
+        })();
+    });
+}
+
 module.exports.API = {
     RSYNC: RSYNC,
     SSH: SSH
@@ -438,7 +514,7 @@ if (require.main === module) {
         .option("--debug", "Show debug output");
 
     var acted = false;
-
+/*
     program
         .command("list [filter]")
         .description("List services")
@@ -450,13 +526,29 @@ if (require.main === module) {
                 });
             }).fail(error);
         });
-
+*/
     program
         .command("deploy <service alias>")
         .description("Deploy a service")
         .action(function(alias) {
             acted = true;
             return pio().deploy(alias).fail(error);
+        });
+
+    program
+        .command("test <service alias>")
+        .description("Test a service")
+        .action(function(alias) {
+            acted = true;
+            return pio().test(alias).fail(error);
+        });
+
+    program
+        .command("status <service alias>")
+        .description("Get the status of a service")
+        .action(function(alias) {
+            acted = true;
+            return pio().test(alias).fail(error);
         });
 
     program.parse(process.argv);
