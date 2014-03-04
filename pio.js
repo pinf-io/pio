@@ -11,27 +11,43 @@ const COLORS = require("colors");
 const DNODE = require("dnode");
 const DEEPCOPY = require("deepcopy");
 const DEEPMERGE = require("deepmerge");
+const CRYPTO = require("crypto");
 const REQUEST = require("request");
 const RSYNC = require("./lib/rsync");
 const SSH = require("./lib/ssh");
 const SPAWN = require("child_process").spawn;
+const DIRSUM = require("dirsum");
+const FSWALKER = require("./lib/fswalker");
 
 COLORS.setTheme({
     error: 'red'
 });
 
 
-var PIO = module.exports = function(seedPath, targetUri) {
+var PIO = module.exports = function(seedPath) {
     var self = this;
 
+    var dnodeClient = null;
+    var dnodeRemote = null;
+    var dnodeTimeout = null;
     self._call = function(method, args, progress) {
-        var deferred = Q.defer();
-        var client = DNODE(progress || {});
-        client.on("error", deferred.reject);
-        // TODO: Handle these failures better?
-        client.on("fail", console.error);
-        client.on("remote", function (remote) {
-            return remote[method](args, function (errStack, response) {
+        if (!self._dnodePort || !self._dnodeHostname) {
+            return Q.resolve(null);
+        }
+        // Close the connection one second after last response if no
+        // more requests.
+        function startTimeout() {
+            if (dnodeTimeout) {
+                clearTimeout(dnodeTimeout);
+            }
+            dnodeTimeout = setTimeout(function() {
+                self.shutdown();
+            }, 1 * 1000);
+        }
+        function callRemote() {
+            var deferred = Q.defer();
+            dnodeRemote[method](args, function (errStack, response) {
+                startTimeout();
                 if (errStack) {
                     var err = new Error("Got remote error");
                     err.stack = errStack;
@@ -39,12 +55,38 @@ var PIO = module.exports = function(seedPath, targetUri) {
                 }
                 return deferred.resolve(response);
             });
+            return deferred.promise;
+        }
+        if (dnodeRemote) {
+            return callRemote();
+        }
+        var deferred = Q.defer();
+        dnodeClient = DNODE(progress || {});
+        dnodeClient.on("error", deferred.reject);
+        // TODO: Handle these failures better?
+        dnodeClient.on("fail", console.error);
+        dnodeClient.on("remote", function (remote) {
+            dnodeRemote = remote;
+            return callRemote().then(deferred.resolve).fail(deferred.reject);
         });
-        client.connect(self._dnodePort, self._dnodeHostname);
+        dnodeClient.connect(self._dnodePort, self._dnodeHostname);
         return deferred.promise;
+    }
+    self.shutdown = function() {
+        if (dnodeTimeout) {
+            clearTimeout(dnodeTimeout);
+            dnodeTimeout = null;
+        }
+        dnodeRemote = null;
+        if (dnodeClient) {
+            dnodeClient.end();
+            dnodeClient = null;
+        }
+        return Q.resolve();
     }
 
     self._ready = Q.fcall(function() {
+
         function resolveUri(uri) {
             var deferred = Q.defer();
             try {
@@ -53,12 +95,42 @@ var PIO = module.exports = function(seedPath, targetUri) {
 
                 var uriParsed = URL.parse(uri);
 
-                if (/^dnode:$/.test(uriParsed.protocol)) {
+                if (/^dnodes?:$/.test(uriParsed.protocol)) {
 
                     self._dnodeHostname = uriParsed.hostname;
-                    self._dnodePort = parseInt(uriParsed.port) || 80;
+                    self._dnodePort = parseInt(uriParsed.port) || 8066;
 
-                    deferred.resolve();
+                    function testConnect() {
+                        var deferred = Q.defer();
+                        var timeout = setTimeout(function() {
+                            return deferred.reject(new Error("Timeout! Could not connect to: " + uri));
+                        }, 1000);
+                        var req = {
+                            timeClient: Date.now()
+                        }
+                        self._call("ping", req).then(function(res) {
+                            try {
+                                ASSERT.equal(req.timeClient, res.timeClient);
+                                // TODO: Track time offset.
+                                clearTimeout(timeout);
+                                return deferred.resolve();
+                            } catch(err) {
+                                return deferred.reject(err);
+                            }
+                        }).fail(function(err) {
+                            clearTimeout(timeout);
+                            return deferred.reject(err);
+                        });
+                        return deferred.promise;
+                    }
+
+                    return testConnect().then(deferred.resolve).fail(function(err) {
+                        self._dnodeHostname = null;
+                        self._dnodePort = null;
+                    });
+
+/*
+// TODO: Refine this.
                 } else
                 if (/^https?:$/.test(uriParsed.protocol)) {
                     REQUEST({
@@ -77,6 +149,7 @@ var PIO = module.exports = function(seedPath, targetUri) {
                             throw new Error("Unsupported schema '" + body.$schema + "'!");
                         }
                     });
+*/
                 } else {
                     throw new Error("Unsupported protocol '" + uriParsed.protocol + "'!");
                 }
@@ -107,6 +180,9 @@ var PIO = module.exports = function(seedPath, targetUri) {
                         }
                     }
 */
+
+// TODO: Use `dnodes://`
+                    return resolveUri("dnode://" + self._config.config.pio.publicIP + ":8066");
                 });
             });
         }
@@ -340,122 +416,159 @@ PIO.prototype.deploy = function(serviceAlias) {
             console.log(("Skip deploy service '" + serviceAlias + "'. It is disabled!").yellow);
         }
 
-        console.log(("Deploy service '" + serviceAlias + "' with config: " + JSON.stringify(serviceConfig, null, 4)).cyan);
+        function hasChanged() {
+            var walker = new FSWALKER.Walker(serviceConfig.config.pio.seedPath);
+            var options = {};
+            options.includeDependencies = false;
+            options.respectDistignore = false;
+            options.respectNestedIgnore = true;
+            return Q.nbind(walker.walk, walker)(options).then(function(list) {
+                var shasum = CRYPTO.createHash("sha1");
+                shasum.update(JSON.stringify(list));
+                var seedHash = shasum.digest("hex");
+                return self._call("status", {
+                    plantPath: serviceConfig.config.pio.plantPath
+                }).then(function(status) {
+                    if (!status || !status.config || !status.config.pio || !status.config.pio.seedHash) {
+                        return seedHash;
+                    }
+                    if (status.config.pio.seedHash !== seedHash) {
+                        console.log("Seed hash has changed!".cyan);
+                        return seedHash;
+                    }
+                    return false;
+                }).fail(function(err) {
+                    console.error("Ignoring status check error:", err.stack);
+                    return seedHash;
+                });
+            });
+        }
 
-        return Q.denodeify(FS.outputFile)(PATH.join(serviceConfig.config.pio.seedPath, ".pio.json"), JSON.stringify(serviceConfig, null, 4)).then(function() {
-
-            var deployScriptPath = PATH.join(serviceConfig.config.pio.seedPath, "deploy.sh");
-
-            function callDeployScript() {
-                return Q.denodeify(function(callback) {
-                    var proc = SPAWN("sh", [
-                        deployScriptPath
-                    ], {
-                        cwd: serviceConfig.config.pio.seedPath,
-                        env: {
-                            PATH: process.env.PATH,
-                            HOME: process.env.HOME
-                        }
-                    });
-                    proc.stdout.on('data', function (data) {
-                        process.stdout.write(data);
-                    });
-                    proc.stderr.on('data', function (data) {
-                        process.stderr.write(data);
-                    });
-                    proc.on('close', function (code) {
-                        if (code !== 0) {
-                            console.error("ERROR: Deploy script exited with code '" + code + "'");
-                            return callback(new Error("Deploy script exited with code '" + code + "'"));
-                        }
-                        return callback(null);
-                    });
-                })();
+        return hasChanged().then(function(seedHash) {
+            if (!seedHash) {
+                console.log(("Skip deploy service '" + serviceAlias + "'. It has not changed").yellow);
+                return;
             }
 
-            return Q.denodeify(function(callback) {
-                return FS.exists(deployScriptPath, function(exists) {
-                    if (exists) {
-                        return callDeployScript().then(function() {
+            serviceConfig.config.pio.seedHash = seedHash;
+
+            console.log(("Deploy service '" + serviceAlias + "' with config: " + JSON.stringify(serviceConfig, null, 4)).cyan);
+
+            return Q.denodeify(FS.outputFile)(PATH.join(serviceConfig.config.pio.seedPath, ".pio.json"), JSON.stringify(serviceConfig, null, 4)).then(function() {
+
+                var deployScriptPath = PATH.join(serviceConfig.config.pio.seedPath, "deploy.sh");
+
+                function callDeployScript() {
+                    return Q.denodeify(function(callback) {
+                        var proc = SPAWN("sh", [
+                            deployScriptPath
+                        ], {
+                            cwd: serviceConfig.config.pio.seedPath,
+                            env: {
+                                PATH: process.env.PATH,
+                                HOME: process.env.HOME
+                            }
+                        });
+                        proc.stdout.on('data', function (data) {
+                            process.stdout.write(data);
+                        });
+                        proc.stderr.on('data', function (data) {
+                            process.stderr.write(data);
+                        });
+                        proc.on('close', function (code) {
+                            if (code !== 0) {
+                                console.error("ERROR: Deploy script exited with code '" + code + "'");
+                                return callback(new Error("Deploy script exited with code '" + code + "'"));
+                            }
                             return callback(null);
-                        }).fail(callback);
-                    }
+                        });
+                    })();
+                }
 
-                    var defaultDeployPlugin = function(pio, serviceConfig) {
+                return Q.denodeify(function(callback) {
+                    return FS.exists(deployScriptPath, function(exists) {
+                        if (exists) {
+                            return callDeployScript().then(function() {
+                                return callback(null);
+                            }).fail(callback);
+                        }
 
-                        var ignoreRulesPath = PATH.join(serviceConfig.config.pio.seedPath, ".deployignore");
+                        var defaultDeployPlugin = function(pio, serviceConfig) {
 
-                        return RSYNC.sync({
-                            sourcePath: serviceConfig.config.pio.seedPath,
-                            targetUser: serviceConfig.config.pio.user,
-                            targetHostname: serviceConfig.config.pio.publicIP,
-                            targetPath: serviceConfig.config.pio.plantPath,
-                            keyPath: serviceConfig.config.pio.keyPath,
-                            excludeFromPath: FS.existsSync(ignoreRulesPath) ? ignoreRulesPath : null
-                        }).then(function() {
-                            return SSH.uploadFile({
+                            var ignoreRulesPath = PATH.join(serviceConfig.config.pio.seedPath, ".deployignore");
+
+                            return RSYNC.sync({
+                                sourcePath: serviceConfig.config.pio.seedPath,
                                 targetUser: serviceConfig.config.pio.user,
                                 targetHostname: serviceConfig.config.pio.publicIP,
-                                source: JSON.stringify(serviceConfig, null, 4),
-                                targetPath: PATH.join(serviceConfig.config.pio.plantPath, "pio.json"),
-                                keyPath: serviceConfig.config.pio.keyPath
+                                targetPath: serviceConfig.config.pio.plantPath,
+                                keyPath: serviceConfig.config.pio.keyPath,
+                                excludeFromPath: FS.existsSync(ignoreRulesPath) ? ignoreRulesPath : null
                             }).then(function() {
-                                var commands = [];
-                                for (var name in serviceConfig.env) {
-                                    commands.push('echo "Setting \'"' + name + '"\' to \'"' + serviceConfig.env[name] + '"\'"');
-                                    commands.push('export ' + name + '=' + serviceConfig.env[name]);
-                                }
-                                commands.push('echo "Calling postdeploy script:"');
-                                commands.push(serviceConfig.postdeploy);
-                                return SSH.runRemoteCommands({
+                                return SSH.uploadFile({
                                     targetUser: serviceConfig.config.pio.user,
                                     targetHostname: serviceConfig.config.pio.publicIP,
-                                    commands: commands,
-                                    workingDirectory: serviceConfig.config.pio.plantPath,
+                                    source: JSON.stringify(serviceConfig, null, 4),
+                                    targetPath: PATH.join(serviceConfig.config.pio.plantPath, ".pio.json"),
                                     keyPath: serviceConfig.config.pio.keyPath
+                                }).then(function() {
+                                    var commands = [];
+                                    for (var name in serviceConfig.env) {
+                                        commands.push('echo "Setting \'"' + name + '"\' to \'"' + serviceConfig.env[name] + '"\'"');
+                                        commands.push('export ' + name + '=' + serviceConfig.env[name]);
+                                    }
+                                    commands.push('echo "Calling postdeploy script:"');
+                                    commands.push(serviceConfig.postdeploy);
+                                    return SSH.runRemoteCommands({
+                                        targetUser: serviceConfig.config.pio.user,
+                                        targetHostname: serviceConfig.config.pio.publicIP,
+                                        commands: commands,
+                                        workingDirectory: serviceConfig.config.pio.plantPath,
+                                        keyPath: serviceConfig.config.pio.keyPath
+                                    });
                                 });
                             });
-                        });
-                    }
+                        }
 
-                    return defaultDeployPlugin(self, serviceConfig).then(function() {
-                        return callback(null);
-                    }).fail(callback);
+                        return defaultDeployPlugin(self, serviceConfig).then(function() {
+                            return callback(null);
+                        }).fail(callback);
 
-                    /*
-                    function readDescriptor() {
-                        var path = PATH.join(serviceConfig.config.pio.seedPath, "package.json");
-                        return Q.denodeify(function(callback) {
-                            return FS.exists(path, function(exists) {
-                                if (!exists) return callback(null, null);
-                                return FS.readJson(path, callback);
-                            });
-                        })();
-                    }
-                    return readDescriptor().then(function(descriptor) {
-                        if (descriptor && descriptor.pm) {
-                            return Q.denodeify(function(callback) {                        
-                                return require.async("../" + descriptor.pm, function(api) {
-                                    try {
-
-                                        ASSERT.equal(typeof api.deploy, "function");
-
-                                        return api.deploy(self, serviceConfig, helpers);
-
-                                    } catch(err) {
-                                        return callback(err);
-                                    }
-                                }, callback);
+                        /*
+                        function readDescriptor() {
+                            var path = PATH.join(serviceConfig.config.pio.seedPath, "package.json");
+                            return Q.denodeify(function(callback) {
+                                return FS.exists(path, function(exists) {
+                                    if (!exists) return callback(null, null);
+                                    return FS.readJson(path, callback);
+                                });
                             })();
                         }
-                        return Q.resolve(defaultDeployPlugin);
+                        return readDescriptor().then(function(descriptor) {
+                            if (descriptor && descriptor.pm) {
+                                return Q.denodeify(function(callback) {                        
+                                    return require.async("../" + descriptor.pm, function(api) {
+                                        try {
+
+                                            ASSERT.equal(typeof api.deploy, "function");
+
+                                            return api.deploy(self, serviceConfig, helpers);
+
+                                        } catch(err) {
+                                            return callback(err);
+                                        }
+                                    }, callback);
+                                })();
+                            }
+                            return Q.resolve(defaultDeployPlugin);
+                        });
+                        return getDeployPlugin().then(function(plugin) {
+                            return plugin(self, serviceConfig);
+                        });
+                        */
                     });
-                    return getDeployPlugin().then(function(plugin) {
-                        return plugin(self, serviceConfig);
-                    });
-                    */
-                });
-            })();
+                })();
+            });
         });
     });
 }
@@ -533,16 +646,10 @@ module.exports.API = {
     SSH: SSH
 };
 
-var pio = module.exports.pio = function() {
-    return new PIO(
-        process.cwd(),
-        process.env.PIO_API || "http://pio.pinf.io/.well-known/pinf"
-    );
-}
 
 if (require.main === module) {
 
-    var program = new COMMANDER.Command();
+    var pio = new PIO(process.cwd());
 
     function error(err) {
         if (typeof err === "string") {
@@ -553,56 +660,74 @@ if (require.main === module) {
         process.exit(1);
     }
 
-    program
-        .version(JSON.parse(FS.readFileSync(PATH.join(__dirname, "package.json"))).version)
-        .option("-v, --verbose", "Show verbose progress")
-        .option("--debug", "Show debug output");
+    return pio.ready().then(function() {
 
-    var acted = false;
-/*
-    program
-        .command("list [filter]")
-        .description("List services")
-        .action(function(path) {
-            acted = true;
-            return pio().list().then(function(list) {
-                list.forEach(function(service) {
-                    console.log(service.alias);
+        return Q.denodeify(function(callback) {
+
+            var program = new COMMANDER.Command();
+
+            program
+                .version(JSON.parse(FS.readFileSync(PATH.join(__dirname, "package.json"))).version)
+                .option("-v, --verbose", "Show verbose progress")
+                .option("--debug", "Show debug output");
+
+            var acted = false;
+        /*
+            program
+                .command("list [filter]")
+                .description("List services")
+                .action(function(path) {
+                    acted = true;
+                    return pio().list().then(function(list) {
+                        list.forEach(function(service) {
+                            console.log(service.alias);
+                        });
+                    }).fail(error);
                 });
-            }).fail(error);
-        });
-*/
-    program
-        .command("deploy [service alias]")
-        .description("Deploy a service")
-        .action(function(alias) {
-            acted = true;
-            return pio().deploy(alias).fail(error);
-        });
+        */
+            program
+                .command("deploy [service alias]")
+                .description("Deploy a service")
+                .action(function(alias) {
+                    acted = true;
+                    return pio.deploy(alias).then(function() {
+                        return callback(null);
+                    }).fail(callback);
+                });
 
-    program
-        .command("test <service alias>")
-        .description("Test a service")
-        .action(function(alias) {
-            acted = true;
-            return pio().test(alias).fail(error);
-        });
+            program
+                .command("test <service alias>")
+                .description("Test a service")
+                .action(function(alias) {
+                    acted = true;
+                    return pio.test(alias).then(function() {
+                        return callback(null);
+                    }).fail(callback);
+                });
 
-    program
-        .command("status <service alias>")
-        .description("Get the status of a service")
-        .action(function(alias) {
-            acted = true;
-            return pio().status(alias).fail(error);
-        });
+            program
+                .command("status <service alias>")
+                .description("Get the status of a service")
+                .action(function(alias) {
+                    acted = true;
+                    return pio.status(alias).then(function() {
+                        return callback(null);
+                    }).fail(callback);
+                });
 
-    program.parse(process.argv);
+            program.parse(process.argv);
 
-    if (!acted) {
-        var command = process.argv.slice(2).join(" ");
-        if (command) {
-            console.error(("ERROR: Command '" + process.argv.slice(2).join(" ") + "' not found!").error);
-        }
-        program.outputHelp();
-    }
+            if (!acted) {
+                var command = process.argv.slice(2).join(" ");
+                if (command) {
+                    console.error(("ERROR: Command '" + process.argv.slice(2).join(" ") + "' not found!").error);
+                }
+                program.outputHelp();
+                return callback(null);
+            }
+        })();
+
+    }).then(function() {
+        return pio.shutdown();
+    }).fail(error);
 }
