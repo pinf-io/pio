@@ -240,6 +240,7 @@ PIO.prototype._normalizeServiceConfig = function(serviceAlias) {
         // TODO: Pass these along in a backchannel unless declared in config.
         serviceConfig.env.AWS_ACCESS_KEY = process.env.AWS_ACCESS_KEY;
         serviceConfig.env.AWS_SECRET_KEY = process.env.AWS_SECRET_KEY;
+        serviceConfig.env.PATH = serviceConfig.env.PATH || "/opt/bin:$PATH";
 
         ASSERT.equal(typeof serviceConfig.config.pio.alias, "string");
         ASSERT.equal(typeof serviceConfig.config.pio.hostname, "string");
@@ -293,11 +294,53 @@ PIO.prototype._normalizeServiceConfig = function(serviceAlias) {
 
 PIO.prototype.deploy = function(serviceAlias) {
     var self = this;
+
+    if (!serviceAlias) {
+        // Deploy all services.
+
+        return self._ready.then(function() {
+
+            var services = Object.keys(self._config.provides);
+
+            console.log("Deploying services sequentially according to 'boot' order:".cyan);
+
+            var done = Q.resolve();
+            self._config.boot.forEach(function(serviceAlias) {
+                done = Q.when(done, function() {
+                    return self.deploy(serviceAlias).then(function() {
+                        console.log("deploy done");
+                    });
+                });
+            });
+
+            return Q.when(done, function() {
+
+                // TODO: Deploy in parallel by default if nothing has changed.
+                console.log("Deploying remaining services sequentially:".cyan);
+
+                var done = Q.resolve();
+                Object.keys(self._config.provides).forEach(function(serviceAlias) {
+                    if (self._config.boot.indexOf(serviceAlias) !== -1) {
+                        return;
+                    }
+                    done = Q.when(done, function() {
+                        return self.deploy(serviceAlias);
+                    });
+                });
+                return done;
+            });
+        });
+    }
+
     // TODO: Only deploy if source has changed (call server to check hash)
     //       or if force is set.
     return self._normalizeServiceConfig(serviceAlias).then(function(serviceConfig) {
 
-        console.log(("Deploy service with config: " + JSON.stringify(serviceConfig, null, 4)).cyan);
+        if (serviceConfig.enabled === false) {
+            console.log(("Skip deploy service '" + serviceAlias + "'. It is disabled!").yellow);
+        }
+
+        console.log(("Deploy service '" + serviceAlias + "' with config: " + JSON.stringify(serviceConfig, null, 4)).cyan);
 
         return Q.denodeify(FS.outputFile)(PATH.join(serviceConfig.config.pio.seedPath, ".pio.json"), JSON.stringify(serviceConfig, null, 4)).then(function() {
 
@@ -375,7 +418,9 @@ PIO.prototype.deploy = function(serviceAlias) {
                         });
                     }
 
-                    return defaultDeployPlugin(self, serviceConfig);
+                    return defaultDeployPlugin(self, serviceConfig).then(function() {
+                        return callback(null);
+                    }).fail(callback);
 
                     /*
                     function readDescriptor() {
@@ -528,7 +573,7 @@ if (require.main === module) {
         });
 */
     program
-        .command("deploy <service alias>")
+        .command("deploy [service alias]")
         .description("Deploy a service")
         .action(function(alias) {
             acted = true;
@@ -548,7 +593,7 @@ if (require.main === module) {
         .description("Get the status of a service")
         .action(function(alias) {
             acted = true;
-            return pio().test(alias).fail(error);
+            return pio().status(alias).fail(error);
         });
 
     program.parse(process.argv);
