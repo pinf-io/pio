@@ -18,6 +18,7 @@ const SSH = require("./lib/ssh");
 const SPAWN = require("child_process").spawn;
 const DIRSUM = require("dirsum");
 const FSWALKER = require("./lib/fswalker");
+const JSON_DIFF_PATCH = require("jsondiffpatch");
 
 COLORS.setTheme({
     error: 'red'
@@ -383,9 +384,7 @@ PIO.prototype.deploy = function(serviceAlias) {
             var done = Q.resolve();
             self._config.boot.forEach(function(serviceAlias) {
                 done = Q.when(done, function() {
-                    return self.deploy(serviceAlias).then(function() {
-                        console.log("deploy done");
-                    });
+                    return self.deploy(serviceAlias);
                 });
             });
 
@@ -414,32 +413,68 @@ PIO.prototype.deploy = function(serviceAlias) {
 
         if (serviceConfig.enabled === false) {
             console.log(("Skip deploy service '" + serviceAlias + "'. It is disabled!").yellow);
+            return;
         }
 
+        var previoussyncFiletreeInfoPath = PATH.join(serviceConfig.config.pio.seedPath, ".pio.sync");
+        var syncFiletreeInfo = null;
         function hasChanged() {
-            var walker = new FSWALKER.Walker(serviceConfig.config.pio.seedPath);
-            var options = {};
-            options.includeDependencies = false;
-            options.respectDistignore = false;
-            options.respectNestedIgnore = true;
-            return Q.nbind(walker.walk, walker)(options).then(function(list) {
-                var shasum = CRYPTO.createHash("sha1");
-                shasum.update(JSON.stringify(list));
-                var seedHash = shasum.digest("hex");
-                return self._call("status", {
-                    plantPath: serviceConfig.config.pio.plantPath
-                }).then(function(status) {
-                    if (!status || !status.config || !status.config.pio || !status.config.pio.seedHash) {
+            function loadPreviousSyncFiletreeInfo() {
+                var deferred = Q.defer();
+                FS.exists(previoussyncFiletreeInfoPath, function(exists) {
+                    if (!exists) return deferred.resolve(null);
+                    return FS.readJson(previoussyncFiletreeInfoPath, function(err, json) {
+                        if (err) return deferred.reject(err);
+                        return deferred.resolve(json);
+                    });
+                });
+                return deferred.promise;
+            }
+            return loadPreviousSyncFiletreeInfo().then(function(previousSyncFiletreeInfo) {
+                var walker = new FSWALKER.Walker(serviceConfig.config.pio.seedPath);
+                var options = {};
+                options.returnIgnoredFiles = true;
+                options.includeDependencies = false;
+                options.respectDistignore = false;
+                options.respectNestedIgnore = true;
+                return Q.nbind(walker.walk, walker)(options).then(function(list) {
+                    syncFiletreeInfo = list;
+                    var shasum = CRYPTO.createHash("sha1");
+                    shasum.update(JSON.stringify(syncFiletreeInfo[0]));
+                    var seedHash = shasum.digest("hex");
+                    return self._call("status", {
+                        plantPath: serviceConfig.config.pio.plantPath
+                    }).then(function(status) {
+                        if (!status || !status.config || !status.config.pio || !status.config.pio.seedHash) {
+                            return seedHash;
+                        }
+                        if (status.config.pio.seedHash !== seedHash) {
+                            console.log("Seed hash has changed!".cyan);
+                            if (previousSyncFiletreeInfo) {
+                                console.log(
+                                    JSON_DIFF_PATCH.formatters.console.format(
+                                        JSON_DIFF_PATCH.create({
+                                            // @source https://github.com/benjamine/jsondiffpatch/issues/21#issuecomment-23892647
+                                            objectHash: function(obj) {
+                                                var hash = [];
+                                                for (var prop in obj) {
+                                                    if (obj.hasOwnProperty(prop)) {
+                                                        hash.push(prop);
+                                                    }
+                                                }
+                                                return hash.sort().join('');
+                                            }
+                                        }).diff(list, previousSyncFiletreeInfo)
+                                    )
+                                );
+                            }
+                            return seedHash;
+                        }
+                        return false;
+                    }).fail(function(err) {
+                        console.error("Ignoring status check error:", err.stack);
                         return seedHash;
-                    }
-                    if (status.config.pio.seedHash !== seedHash) {
-                        console.log("Seed hash has changed!".cyan);
-                        return seedHash;
-                    }
-                    return false;
-                }).fail(function(err) {
-                    console.error("Ignoring status check error:", err.stack);
-                    return seedHash;
+                    });
                 });
             });
         }
@@ -568,6 +603,10 @@ PIO.prototype.deploy = function(serviceAlias) {
                         */
                     });
                 })();
+            }).then(function() {
+
+                return Q.denodeify(FS.outputFile)(previoussyncFiletreeInfoPath, JSON.stringify(syncFiletreeInfo, null, 4));
+
             });
         });
     });
