@@ -31,7 +31,7 @@ var PIO = module.exports = function(seedPath) {
     var dnodeClient = null;
     var dnodeRemote = null;
     var dnodeTimeout = null;
-    self._call = function(method, args, progress) {
+    self._call = function(method, args) {
         if (!self._dnodePort || !self._dnodeHostname) {
             return Q.resolve(null);
         }
@@ -59,13 +59,29 @@ var PIO = module.exports = function(seedPath) {
             return deferred.promise;
         }
         if (dnodeRemote) {
+            if (dnodeTimeout) {
+                clearTimeout(dnodeTimeout);
+                dnodeTimeout = null;
+            }
             return callRemote();
         }
         var deferred = Q.defer();
-        dnodeClient = DNODE(progress || {});
-        dnodeClient.on("error", deferred.reject);
+        dnodeClient = DNODE({
+            stdout: function(data) {
+                process.stdout.write(new Buffer(data, "base64"));
+            },
+            stderr: function(data) {
+                process.stderr.write(new Buffer(data, "base64"));
+            }
+        });
+        dnodeClient.on("error", function (err) {
+            console.error("dnode error", err.stack);
+            return deferred.reject(err);
+        });
         // TODO: Handle these failures better?
-        dnodeClient.on("fail", console.error);
+        dnodeClient.on("fail", function (err) {
+            console.error("dnode fail", err.stack);
+        });
         dnodeClient.on("remote", function (remote) {
             dnodeRemote = remote;
             return callRemote().then(deferred.resolve).fail(deferred.reject);
@@ -580,6 +596,38 @@ PIO.prototype.deploy = function(serviceAlias, options) {
 
                                 function defaultDeployPlugin(pio, serviceConfig) {
 
+                                    function uploadSource(targetPath, source) {
+                                        return self._call("_putFile", {
+                                            path: targetPath,
+                                            body: source
+                                        }).then(function(response) {
+                                            if (response === true) return;
+                                            return SSH.uploadFile({
+                                                targetUser: serviceConfig.config.pio.user,
+                                                targetHostname: serviceConfig.config.pio.publicIP,
+                                                source: source,
+                                                targetPath: targetPath,
+                                                keyPath: serviceConfig.config.pio.keyPath
+                                            });
+                                        });
+                                    }
+
+                                    function runRemoteCommands(commands, workingDirectory) {
+                                        return self._call("_runCommands", {
+                                            commands: commands,
+                                            cwd: workingDirectory
+                                        }).then(function(code) {
+                                            if (code === 0) return;
+                                            return SSH.runRemoteCommands({
+                                                targetUser: serviceConfig.config.pio.user,
+                                                targetHostname: serviceConfig.config.pio.publicIP,
+                                                commands: commands,
+                                                workingDirectory: workingDirectory,
+                                                keyPath: serviceConfig.config.pio.keyPath
+                                            });
+                                        });
+                                    }
+
                                     var ignoreRulesPath = PATH.join(serviceConfig.config.pio.seedPath, ".deployignore");
 
                                     return RSYNC.sync({
@@ -590,13 +638,16 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                                         keyPath: serviceConfig.config.pio.keyPath,
                                         excludeFromPath: FS.existsSync(ignoreRulesPath) ? ignoreRulesPath : null
                                     }).then(function() {
-                                        return SSH.uploadFile({
-                                            targetUser: serviceConfig.config.pio.user,
-                                            targetHostname: serviceConfig.config.pio.publicIP,
-                                            source: JSON.stringify(serviceConfig, null, 4),
-                                            targetPath: PATH.join(serviceConfig.config.pio.plantPath, ".pio.json"),
-                                            keyPath: serviceConfig.config.pio.keyPath
-                                        }).then(function() {
+                                        return uploadSource(
+                                            PATH.join(serviceConfig.config.pio.plantPath, ".pio.json"),
+                                            JSON.stringify(serviceConfig, null, 4)
+                                        ).then(function() {
+
+                                            if (!FS.existsSync(PATH.join(serviceConfig.config.pio.seedPath, "postdeploy.sh"))) {
+                                                console.log("Skipping postdeploy. No postdeploy.sh file found!".yellow);
+                                                return;
+                                            }
+
                                             var commands = [];
                                             for (var name in serviceConfig.env) {
                                                 commands.push('echo "Setting \'"' + name + '"\' to \'"' + serviceConfig.env[name] + '"\'"');
@@ -606,16 +657,8 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                                                 commands.push('export ' + name + '=' + serviceConfig.env[name]);
                                             }
                                             commands.push('echo "Calling postdeploy script:"');
-                                            if (FS.existsSync(PATH.join(serviceConfig.config.pio.seedPath, "postdeploy.sh"))) {
-                                                commands.push("sh postdeploy.sh");
-                                            }
-                                            return SSH.runRemoteCommands({
-                                                targetUser: serviceConfig.config.pio.user,
-                                                targetHostname: serviceConfig.config.pio.publicIP,
-                                                commands: commands,
-                                                workingDirectory: serviceConfig.config.pio.plantPath,
-                                                keyPath: serviceConfig.config.pio.keyPath
-                                            });
+                                            commands.push("sh postdeploy.sh");
+                                            return runRemoteCommands(commands, serviceConfig.config.pio.plantPath);
                                         });
                                     });
                                 }
