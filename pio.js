@@ -188,6 +188,11 @@ var PIO = module.exports = function(seedPath) {
             });
         }
         return Q.denodeify(function(callback) {
+            if (process.env.PIO_CONFIG_PATH) {
+                return loadConfig(process.env.PIO_CONFIG_PATH).then(function() {
+                    return callback(null);
+                }).fail(callback);
+            }
             return FS.exists(PATH.join(seedPath, "pio.json"), function(exists) {
                 if (exists) {
                     return loadConfig(PATH.join(seedPath, "pio.json")).then(function() {
@@ -315,8 +320,13 @@ PIO.prototype._normalizeServiceConfig = function(serviceAlias) {
             serviceConfig.env = serviceConfig.env || {};
         }
         // TODO: Pass these along in a backchannel unless declared in config.
-        serviceConfig.env.AWS_ACCESS_KEY = process.env.AWS_ACCESS_KEY;
-        serviceConfig.env.AWS_SECRET_KEY = process.env.AWS_SECRET_KEY;
+        // TODO: Make env propagation more generic using new config module.
+        if (serviceConfig.env.AWS_ACCESS_KEY === "$AWS_ACCESS_KEY") {
+            serviceConfig.env.AWS_ACCESS_KEY = process.env.AWS_ACCESS_KEY;
+        }
+        if (serviceConfig.env.AWS_SECRET_KEY === "$AWS_SECRET_KEY") {
+            serviceConfig.env.AWS_SECRET_KEY = process.env.AWS_SECRET_KEY;
+        }
         serviceConfig.env.PATH = serviceConfig.env.PATH || "/opt/bin:$PATH";
 
         ASSERT.equal(typeof serviceConfig.config.pio.alias, "string");
@@ -369,7 +379,7 @@ PIO.prototype._normalizeServiceConfig = function(serviceAlias) {
 }
 
 
-PIO.prototype.deploy = function(serviceAlias) {
+PIO.prototype.deploy = function(serviceAlias, options) {
     var self = this;
 
     if (!serviceAlias) {
@@ -384,7 +394,7 @@ PIO.prototype.deploy = function(serviceAlias) {
             var done = Q.resolve();
             self._config.boot.forEach(function(serviceAlias) {
                 done = Q.when(done, function() {
-                    return self.deploy(serviceAlias);
+                    return self.deploy(serviceAlias, options);
                 });
             });
 
@@ -399,7 +409,7 @@ PIO.prototype.deploy = function(serviceAlias) {
                         return;
                     }
                     done = Q.when(done, function() {
-                        return self.deploy(serviceAlias);
+                        return self.deploy(serviceAlias, options);
                     });
                 });
                 return done;
@@ -481,132 +491,143 @@ PIO.prototype.deploy = function(serviceAlias) {
 
         return hasChanged().then(function(seedHash) {
             if (!seedHash) {
-                console.log(("Skip deploy service '" + serviceAlias + "'. It has not changed").yellow);
-                return;
+                if (options.force) {
+                    console.log(("Skip deploy service '" + serviceAlias + "'. It has not changed. BUT CONTINUE due to FORCE").yellow);
+                } else {
+                    console.log(("Skip deploy service '" + serviceAlias + "'. It has not changed.").yellow);
+                    return;
+                }
             }
 
             serviceConfig.config.pio.seedHash = seedHash;
 
-            console.log(("Deploy service '" + serviceAlias + "' with config: " + JSON.stringify(serviceConfig, null, 4)).cyan);
-
-            return Q.denodeify(FS.outputFile)(PATH.join(serviceConfig.config.pio.seedPath, ".pio.json"), JSON.stringify(serviceConfig, null, 4)).then(function() {
-
-                var deployScriptPath = PATH.join(serviceConfig.config.pio.seedPath, "deploy.sh");
-
-                function callDeployScript() {
-                    return Q.denodeify(function(callback) {
-                        var proc = SPAWN("sh", [
-                            deployScriptPath
-                        ], {
-                            cwd: serviceConfig.config.pio.seedPath,
-                            env: {
-                                PATH: process.env.PATH,
-                                HOME: process.env.HOME
-                            }
-                        });
-                        proc.stdout.on('data', function (data) {
-                            process.stdout.write(data);
-                        });
-                        proc.stderr.on('data', function (data) {
-                            process.stderr.write(data);
-                        });
-                        proc.on('close', function (code) {
-                            if (code !== 0) {
-                                console.error("ERROR: Deploy script exited with code '" + code + "'");
-                                return callback(new Error("Deploy script exited with code '" + code + "'"));
-                            }
-                            return callback(null);
-                        });
-                    })();
+            function readDescriptor() {
+                var path = PATH.join(serviceConfig.config.pio.seedPath, "package.json");
+                return Q.denodeify(function(callback) {
+                    return FS.exists(path, function(exists) {
+                        if (!exists) return callback(null, null);
+                        return FS.readJson(path, callback);
+                    });
+                })();
+            }
+            return readDescriptor().then(function(descriptor) {
+                if (descriptor) {
+                     serviceConfig = DEEPMERGE(DEEPCOPY(descriptor), DEEPCOPY(serviceConfig));
                 }
 
-                return Q.denodeify(function(callback) {
-                    return FS.exists(deployScriptPath, function(exists) {
-                        if (exists) {
-                            return callDeployScript().then(function() {
-                                return callback(null);
-                            }).fail(callback);
-                        }
+                console.log(("Deploy service '" + serviceAlias + "' with config: " + JSON.stringify(serviceConfig, null, 4)).cyan);
 
-                        var defaultDeployPlugin = function(pio, serviceConfig) {
+                return Q.denodeify(FS.outputFile)(PATH.join(serviceConfig.config.pio.seedPath, ".pio.json"), JSON.stringify(serviceConfig, null, 4)).then(function() {
 
-                            var ignoreRulesPath = PATH.join(serviceConfig.config.pio.seedPath, ".deployignore");
-
-                            return RSYNC.sync({
-                                sourcePath: serviceConfig.config.pio.seedPath,
-                                targetUser: serviceConfig.config.pio.user,
-                                targetHostname: serviceConfig.config.pio.publicIP,
-                                targetPath: serviceConfig.config.pio.plantPath,
-                                keyPath: serviceConfig.config.pio.keyPath,
-                                excludeFromPath: FS.existsSync(ignoreRulesPath) ? ignoreRulesPath : null
-                            }).then(function() {
-                                return SSH.uploadFile({
-                                    targetUser: serviceConfig.config.pio.user,
-                                    targetHostname: serviceConfig.config.pio.publicIP,
-                                    source: JSON.stringify(serviceConfig, null, 4),
-                                    targetPath: PATH.join(serviceConfig.config.pio.plantPath, ".pio.json"),
-                                    keyPath: serviceConfig.config.pio.keyPath
-                                }).then(function() {
-                                    var commands = [];
-                                    for (var name in serviceConfig.env) {
-                                        commands.push('echo "Setting \'"' + name + '"\' to \'"' + serviceConfig.env[name] + '"\'"');
-                                        commands.push('export ' + name + '=' + serviceConfig.env[name]);
+                    return Q.fcall(function() {
+                        if (serviceConfig.config && serviceConfig.config["pio.deploy.converter"]) {
+                            return Q.denodeify(function(callback) {                        
+                                return require.async("../pio.deploy.converter", function(api) {
+                                    try {
+                                        return api.convert(self, serviceConfig).then(function(serviceConfig) {
+                                            return callback(null, serviceConfig);
+                                        }).fail(callback);
+                                    } catch(err) {
+                                        return callback(err);
                                     }
-                                    commands.push('echo "Calling postdeploy script:"');
-                                    commands.push(serviceConfig.postdeploy);
-                                    return SSH.runRemoteCommands({
-                                        targetUser: serviceConfig.config.pio.user,
-                                        targetHostname: serviceConfig.config.pio.publicIP,
-                                        commands: commands,
-                                        workingDirectory: serviceConfig.config.pio.plantPath,
-                                        keyPath: serviceConfig.config.pio.keyPath
-                                    });
-                                });
-                            });
+                                }, callback);
+                            })();
                         }
+                        return serviceConfig;
+                    }).then(function(serviceConfig) {
 
-                        return defaultDeployPlugin(self, serviceConfig).then(function() {
-                            return callback(null);
-                        }).fail(callback);
+                        var deployScriptPath = PATH.join(serviceConfig.config.pio.seedPath, "deploy.sh");
 
-                        /*
-                        function readDescriptor() {
-                            var path = PATH.join(serviceConfig.config.pio.seedPath, "package.json");
+                        function callDeployScript() {
                             return Q.denodeify(function(callback) {
-                                return FS.exists(path, function(exists) {
-                                    if (!exists) return callback(null, null);
-                                    return FS.readJson(path, callback);
+                                var env = {
+                                    PATH: process.env.PATH,
+                                    HOME: process.env.HOME
+                                };
+                                if (options.force) {
+                                    env.PIO_FORCE = options.force;
+                                }
+                                var proc = SPAWN("sh", [
+                                    deployScriptPath
+                                ], {
+                                    cwd: serviceConfig.config.pio.seedPath,
+                                    env: env
+                                });
+                                proc.stdout.on('data', function (data) {
+                                    process.stdout.write(data);
+                                });
+                                proc.stderr.on('data', function (data) {
+                                    process.stderr.write(data);
+                                });
+                                proc.on('close', function (code) {
+                                    if (code !== 0) {
+                                        console.error("ERROR: Deploy script exited with code '" + code + "'");
+                                        return callback(new Error("Deploy script exited with code '" + code + "'"));
+                                    }
+                                    return callback(null);
                                 });
                             })();
                         }
-                        return readDescriptor().then(function(descriptor) {
-                            if (descriptor && descriptor.pm) {
-                                return Q.denodeify(function(callback) {                        
-                                    return require.async("../" + descriptor.pm, function(api) {
-                                        try {
 
-                                            ASSERT.equal(typeof api.deploy, "function");
+                        return Q.denodeify(function(callback) {
+                            return FS.exists(deployScriptPath, function(exists) {
+                                if (exists) {
+                                    return callDeployScript().then(function() {
+                                        return callback(null);
+                                    }).fail(callback);
+                                }
 
-                                            return api.deploy(self, serviceConfig, helpers);
+                                function defaultDeployPlugin(pio, serviceConfig) {
 
-                                        } catch(err) {
-                                            return callback(err);
-                                        }
-                                    }, callback);
-                                })();
-                            }
-                            return Q.resolve(defaultDeployPlugin);
-                        });
-                        return getDeployPlugin().then(function(plugin) {
-                            return plugin(self, serviceConfig);
-                        });
-                        */
+                                    var ignoreRulesPath = PATH.join(serviceConfig.config.pio.seedPath, ".deployignore");
+
+                                    return RSYNC.sync({
+                                        sourcePath: serviceConfig.config.pio.seedPath,
+                                        targetUser: serviceConfig.config.pio.user,
+                                        targetHostname: serviceConfig.config.pio.publicIP,
+                                        targetPath: serviceConfig.config.pio.plantPath,
+                                        keyPath: serviceConfig.config.pio.keyPath,
+                                        excludeFromPath: FS.existsSync(ignoreRulesPath) ? ignoreRulesPath : null
+                                    }).then(function() {
+                                        return SSH.uploadFile({
+                                            targetUser: serviceConfig.config.pio.user,
+                                            targetHostname: serviceConfig.config.pio.publicIP,
+                                            source: JSON.stringify(serviceConfig, null, 4),
+                                            targetPath: PATH.join(serviceConfig.config.pio.plantPath, ".pio.json"),
+                                            keyPath: serviceConfig.config.pio.keyPath
+                                        }).then(function() {
+                                            var commands = [];
+                                            for (var name in serviceConfig.env) {
+                                                commands.push('echo "Setting \'"' + name + '"\' to \'"' + serviceConfig.env[name] + '"\'"');
+                                                if (options.force) {
+                                                    commands.push('export PIO_FORCE=' + options.force);
+                                                }
+                                                commands.push('export ' + name + '=' + serviceConfig.env[name]);
+                                            }
+                                            commands.push('echo "Calling postdeploy script:"');
+                                            commands.push(serviceConfig.postdeploy);
+                                            return SSH.runRemoteCommands({
+                                                targetUser: serviceConfig.config.pio.user,
+                                                targetHostname: serviceConfig.config.pio.publicIP,
+                                                commands: commands,
+                                                workingDirectory: serviceConfig.config.pio.plantPath,
+                                                keyPath: serviceConfig.config.pio.keyPath
+                                            });
+                                        });
+                                    });
+                                }
+
+                                return defaultDeployPlugin(self, serviceConfig).then(function() {
+                                    return callback(null);
+                                }).fail(callback);
+                            });
+                        })();
                     });
-                })();
-            }).then(function() {
+                }).then(function() {
 
-                return Q.denodeify(FS.outputFile)(previoussyncFiletreeInfoPath, JSON.stringify(syncFiletreeInfo, null, 4));
+                    return Q.denodeify(FS.outputFile)(previoussyncFiletreeInfoPath, JSON.stringify(syncFiletreeInfo, null, 4));
 
+                });
             });
         });
     });
@@ -708,7 +729,8 @@ if (require.main === module) {
             program
                 .version(JSON.parse(FS.readFileSync(PATH.join(__dirname, "package.json"))).version)
                 .option("-v, --verbose", "Show verbose progress")
-                .option("--debug", "Show debug output");
+                .option("--debug", "Show debug output")
+                .option("-f, --force", "Force an operation when it would normally be skipped");
 
             var acted = false;
         /*
@@ -727,9 +749,11 @@ if (require.main === module) {
             program
                 .command("deploy [service alias]")
                 .description("Deploy a service")
-                .action(function(alias) {
+                .action(function(alias, options) {
                     acted = true;
-                    return pio.deploy(alias).then(function() {
+                    return pio.deploy(alias, {
+                        force: program.force || false
+                    }).then(function() {
                         return callback(null);
                     }).fail(callback);
                 });

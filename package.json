@@ -1,8 +1,11 @@
 {
   "name": "pio",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "CLI client for PINF.io service",
   "main": "pio.js",
+  "bin": {
+    "pio": "pio.sh"
+  },
   "dependencies": {
     "commander": "~2.1.0",
     "colors": "~0.6.2",
