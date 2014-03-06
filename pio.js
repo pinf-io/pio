@@ -129,7 +129,6 @@ var PIO = module.exports = function(seedPath) {
                         self._dnodeHostname = null;
                         self._dnodePort = null;
                     });
-
 /*
 // TODO: Refine this.
                 } else
@@ -429,6 +428,7 @@ PIO.prototype.deploy = function(serviceAlias, options) {
         var previoussyncFiletreeInfoPath = PATH.join(serviceConfig.config.pio.seedPath, ".pio.sync");
         var syncFiletreeInfo = null;
         function hasChanged() {
+            console.log("Check if changed");
             function loadPreviousSyncFiletreeInfo() {
                 var deferred = Q.defer();
                 FS.exists(previoussyncFiletreeInfoPath, function(exists) {
@@ -453,12 +453,15 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                     shasum.update(JSON.stringify(syncFiletreeInfo[0]));
                     var seedHash = shasum.digest("hex");
                     serviceConfig.config.pio.seedHash = seedHash;
+                    console.log("Our seed hash: " + serviceConfig.config.pio.seedHash);
                     return self._call("status", {
                         plantPath: serviceConfig.config.pio.plantPath
                     }).then(function(status) {
                         if (!status || !status.config || !status.config.pio || !status.config.pio.seedHash) {
+                            console.log("No remote seed hash!");
                             return seedHash;
                         }
+                        console.log("Remote seed hash: " + status.config.pio.seedHash);
                         if (status.config.pio.seedHash !== seedHash) {
                             console.log("Seed hash has changed!".cyan);
                             if (previousSyncFiletreeInfo) {
@@ -603,7 +606,9 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                                                 commands.push('export ' + name + '=' + serviceConfig.env[name]);
                                             }
                                             commands.push('echo "Calling postdeploy script:"');
-                                            commands.push(serviceConfig.postdeploy);
+                                            if (FS.existsSync(PATH.join(serviceConfig.config.pio.seedPath, "postdeploy.sh"))) {
+                                                commands.push("sh postdeploy.sh");
+                                            }
                                             return SSH.runRemoteCommands({
                                                 targetUser: serviceConfig.config.pio.user,
                                                 targetHostname: serviceConfig.config.pio.publicIP,
