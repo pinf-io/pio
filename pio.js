@@ -452,6 +452,7 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                     var shasum = CRYPTO.createHash("sha1");
                     shasum.update(JSON.stringify(syncFiletreeInfo[0]));
                     var seedHash = shasum.digest("hex");
+                    serviceConfig.config.pio.seedHash = seedHash;
                     return self._call("status", {
                         plantPath: serviceConfig.config.pio.plantPath
                     }).then(function(status) {
@@ -489,8 +490,8 @@ PIO.prototype.deploy = function(serviceAlias, options) {
             });
         }
 
-        return hasChanged().then(function(seedHash) {
-            if (!seedHash) {
+        return hasChanged().then(function(deploy) {
+            if (!deploy) {
                 if (options.force) {
                     console.log(("Skip deploy service '" + serviceAlias + "'. It has not changed. BUT CONTINUE due to FORCE").yellow);
                 } else {
@@ -498,9 +499,6 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                     return;
                 }
             }
-
-            serviceConfig.config.pio.seedHash = seedHash;
-
             function readDescriptor() {
                 var path = PATH.join(serviceConfig.config.pio.seedPath, "package.json");
                 return Q.denodeify(function(callback) {
