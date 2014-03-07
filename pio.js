@@ -3,11 +3,13 @@ require("require.async")(require);
 
 const ASSERT = require("assert");
 const PATH = require("path");
+const EVENTS = require("events");
 const FS = require("fs-extra");
 const Q = require("q");
 const URL = require("url");
 const COMMANDER = require("commander");
 const COLORS = require("colors");
+const UUID = require("uuid");
 const DNODE = require("dnode");
 const DEEPCOPY = require("deepcopy");
 const DEEPMERGE = require("deepmerge");
@@ -31,6 +33,7 @@ var PIO = module.exports = function(seedPath) {
     var dnodeClient = null;
     var dnodeRemote = null;
     var dnodeTimeout = null;
+    var dnodeEvents = new EVENTS.EventEmitter();
     self._call = function(method, args) {
         if (!self._dnodePort || !self._dnodeHostname) {
             return Q.resolve(null);
@@ -47,10 +50,20 @@ var PIO = module.exports = function(seedPath) {
         }
         function callRemote() {
             var deferred = Q.defer();
+            var stderr = [];
+            // NOTE: This collects all errors that happen on all connections
+            //       and broadcasts these to all connections. This could be considered a feature
+            //       or a bug. We consider it a feature for now as ANY error should stop
+            //       the provisioning run.
+            var stderrListener = function(data) {
+                stderr.push(data);
+            }
+            dnodeEvents.on("stderr", stderrListener);
             dnodeRemote[method](args, function (errStack, response) {
+                dnodeEvents.removeListener("stderr", stderrListener);
                 startTimeout();
                 if (errStack) {
-                    var err = new Error("Got remote error");
+                    var err = new Error("Got remote error: " + stderr.join(""));
                     err.stack = errStack;
                     return deferred.reject(err);
                 }
@@ -68,14 +81,16 @@ var PIO = module.exports = function(seedPath) {
         var deferred = Q.defer();
         dnodeClient = DNODE({
             stdout: function(data) {
+                dnodeEvents.emit("stdout", new Buffer(data, "base64"));
                 process.stdout.write(new Buffer(data, "base64"));
             },
             stderr: function(data) {
+                dnodeEvents.emit("stderr", new Buffer(data, "base64"));
                 process.stderr.write(new Buffer(data, "base64"));
             }
         });
         dnodeClient.on("error", function (err) {
-            console.error("dnode error", err.stack);
+            //console.error("dnode error", err.stack);
             return deferred.reject(err);
         });
         // TODO: Handle these failures better?
@@ -102,130 +117,261 @@ var PIO = module.exports = function(seedPath) {
         return Q.resolve();
     }
 
-    self._ready = Q.fcall(function() {
+    // A hash that is affected by changes in `PIO_SEED_ID` and `PIO_SEED_SECRET` only.
+    self._seedHash = function (parts) {
+        var shasum = CRYPTO.createHash("sha1");
+        if (self._config.config.pio.seedId) {
+            shasum.update([
+                "seed-hash",
+                self._config.config.pio.seedId
+            ].concat(parts).join(":"));
+        } else {
+            var ok = true;
+            if (typeof process.env.PIO_SEED_ID !== "string") {
+                ok = false;
+                console.error(("'PIO_SEED_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (typeof process.env.PIO_SEED_SECRET !== "string") {
+                ok = false;
+                console.error(("'PIO_SEED_SECRET' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (!ok) {
+                throw true;
+            }            
+            shasum.update([
+                "seed-hash",
+                process.env.PIO_SEED_ID,
+                process.env.PIO_SEED_SECRET
+            ].concat(parts).join(":"));
+        }
+        return shasum.digest("hex");
+    }
 
-        function resolveUri(uri) {
-            var deferred = Q.defer();
+    // A hash that is affected by all properties describing the specific instance
+    // we are interacting with as well as `PIO_SEED_ID`, `PIO_SEED_SECRET`,
+    // `PIO_USER_ID` and `PIO_USER_SECRET`.
+    self._instanceHash = function (parts) {
+        var shasum = CRYPTO.createHash("sha1");
+        if (self._config.config.pio.deployId) {
+            shasum.update([
+                "instance-hash",
+                self._config.config.pio.deployId,
+                self._config.config.pio.domain,
+                self._config.config.pio.namespace,
+                self._config.config.pio.ip
+            ].concat(parts).join(":"));
+        } else {
+            var ok = true;
+            if (typeof process.env.PIO_SEED_ID !== "string") {
+                ok = false;
+                console.error(("'PIO_SEED_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (typeof process.env.PIO_SEED_SECRET !== "string") {
+                ok = false;
+                console.error(("'PIO_SEED_SECRET' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (typeof process.env.PIO_USER_ID !== "string") {
+                ok = false;
+                console.error(("'PIO_USER_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (typeof process.env.PIO_USER_SECRET !== "string") {
+                ok = false;
+                console.error(("'PIO_USER_SECRET' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (!ok) {
+                throw true;
+            }            
+            shasum.update([
+                "instance-hash",
+                process.env.PIO_SEED_ID,
+                process.env.PIO_SEED_SECRET,
+                process.env.PIO_USER_ID,
+                process.env.PIO_USER_SECRET,
+                self._config.config.pio.domain,
+                self._config.config.pio.namespace,
+                self._config.config.pio.ip
+            ].concat(parts).join(":"));
+        }
+        return shasum.digest("hex");
+    }
+
+    self._load = function() {
+        return Q.fcall(function() {
+
             try {
-
-                ASSERT.equal(typeof uri, "string");
-
-                var uriParsed = URL.parse(uri);
-
-                if (/^dnodes?:$/.test(uriParsed.protocol)) {
-
-                    self._dnodeHostname = uriParsed.hostname;
-                    self._dnodePort = parseInt(uriParsed.port) || 8066;
-
-                    function testConnect() {
-                        var deferred = Q.defer();
-                        var timeout = setTimeout(function() {
-                            return deferred.reject(new Error("Timeout! Could not connect to: " + uri));
-                        }, 1000);
-                        var req = {
-                            timeClient: Date.now()
-                        }
-                        self._call("ping", req).then(function(res) {
-                            try {
-                                ASSERT.equal(req.timeClient, res.timeClient);
-                                // TODO: Track time offset.
-                                clearTimeout(timeout);
-                                return deferred.resolve();
-                            } catch(err) {
-                                return deferred.reject(err);
-                            }
-                        }).fail(function(err) {
-                            clearTimeout(timeout);
-                            return deferred.reject(err);
-                        });
-                        return deferred.promise;
-                    }
-
-                    return testConnect().then(deferred.resolve).fail(function(err) {
-                        self._dnodeHostname = null;
-                        self._dnodePort = null;
-                    });
-/*
-// TODO: Refine this.
-                } else
-                if (/^https?:$/.test(uriParsed.protocol)) {
-                    REQUEST({
-                        uri: uriParsed,
-                        method: "GET",
-                        json: true
-                    }, function(err, res, body) {
-                        if (err) return deferred.reject(err);
-                        if (body.$schema === "http://schema.pinf.org/strawman/well-known.schema") {
-
-                            ASSERT.equal(typeof body.services, "object");
-                            ASSERT.equal(typeof body.services.pio, "string");
-
-                            return resolveUri(body.services.pio).then(deferred.resolve, deferred.reject);
-                        } else {
-                            throw new Error("Unsupported schema '" + body.$schema + "'!");
-                        }
-                    });
-*/
+                if (!FS.existsSync("/etc/machine-id")) {
+                    var machineId = UUID.v4();
+                    FS.outputFileSync("/etc/machine-id", machineId);
+                    console.log(("Setting '/etc/machine-id' to '" + machineId + "'").magenta);
                 } else {
-                    throw new Error("Unsupported protocol '" + uriParsed.protocol + "'!");
+                    // TODO: Load /etc/machine-id for insertion into RT info.
                 }
             } catch(err) {
-                return deferred.reject(err);
-            }
-            return deferred.promise;
-        }
-        function loadConfig(path) {
-            // TODO: Use more generic PINF-based config loader here.
-            console.log("Using config:", path);
-            return Q.denodeify(FS.readJson)(path).then(function(config) {
-                self._configPath = path;
-                self._config = config;
-                if (/\/\.pio\.json$/.test(path)) {
-                    console.log("Skip loading profile as we are using a consolidated pio descriptor (" + path + ").");
-                    return;
+                if (err.code === "EACCES") {
+                    // We ignore the absence of /etc/machine-id here as we cannot silently fix it.
+                } else {
+                    throw err;
                 }
-                path = PATH.join(path, "..", "pio." + self._config.config.pio.profile + ".json");
-                console.log("Using profile:", path);
-                return Q.denodeify(FS.readJson)(path).then(function(profile) {
-
-                    self._config = DEEPMERGE(self._config, profile);
-/*
-                    for (var key in self._config) {
-                        if (/^config\[cloud=.+\]$/.test(key)) {
-                            delete self._config[key];
-                        }
-                    }
-*/
-
-// TODO: Use `dnodes://`
-                    return resolveUri("dnode://" + self._config.config.pio.publicIP + ":8066");
-                });
-            });
-        }
-        return Q.denodeify(function(callback) {
-            if (process.env.PIO_CONFIG_PATH) {
-                return loadConfig(process.env.PIO_CONFIG_PATH).then(function() {
-                    return callback(null);
-                }).fail(callback);
             }
-            return FS.exists(PATH.join(seedPath, "pio.json"), function(exists) {
-                if (exists) {
-                    return loadConfig(PATH.join(seedPath, "pio.json")).then(function() {
+
+            function resolveUri(uri) {
+                var deferred = Q.defer();
+                try {
+
+                    ASSERT.equal(typeof uri, "string");
+
+                    var uriParsed = URL.parse(uri);
+
+                    if (/^dnodes?:$/.test(uriParsed.protocol)) {
+
+                        self._dnodeHostname = uriParsed.hostname;
+                        self._dnodePort = parseInt(uriParsed.port) || 8066;
+
+                        function testConnect() {
+                            var deferred = Q.defer();
+                            var timeout = setTimeout(function() {
+                                return deferred.reject(new Error("Timeout! Could not connect to: " + uri));
+                            }, 1000);
+                            var req = {
+                                timeClient: Date.now()
+                            }
+                            self._call("ping", req).then(function(res) {
+                                try {
+                                    ASSERT.equal(req.timeClient, res.timeClient);
+                                    // TODO: Track time offset.
+                                    clearTimeout(timeout);
+                                    return deferred.resolve();
+                                } catch(err) {
+                                    return deferred.reject(err);
+                                }
+                            }).fail(function(err) {
+                                clearTimeout(timeout);
+                                return deferred.reject(err);
+                            });
+                            return deferred.promise;
+                        }
+
+                        return testConnect().then(deferred.resolve).fail(function(err) {
+                            self._dnodeHostname = null;
+                            self._dnodePort = null;
+                        });
+    /*
+    // TODO: Refine this.
+                    } else
+                    if (/^https?:$/.test(uriParsed.protocol)) {
+                        REQUEST({
+                            uri: uriParsed,
+                            method: "GET",
+                            json: true
+                        }, function(err, res, body) {
+                            if (err) return deferred.reject(err);
+                            if (body.$schema === "http://schema.pinf.org/strawman/well-known.schema") {
+
+                                ASSERT.equal(typeof body.services, "object");
+                                ASSERT.equal(typeof body.services.pio, "string");
+
+                                return resolveUri(body.services.pio).then(deferred.resolve, deferred.reject);
+                            } else {
+                                throw new Error("Unsupported schema '" + body.$schema + "'!");
+                            }
+                        });
+    */
+                    } else {
+                        throw new Error("Unsupported protocol '" + uriParsed.protocol + "'!");
+                    }
+                } catch(err) {
+                    return deferred.reject(err);
+                }
+                return deferred.promise;
+            }
+            function loadConfig(path) {
+                // TODO: Use more generic PINF-based config loader here.
+                console.log("Using config:", path);
+                return Q.denodeify(FS.readJson)(path).then(function(config) {
+                    self._configPath = path;
+                    self._config = config;
+
+                    function verify() {
+                        ASSERT.equal(typeof self._config.uuid, "string", "'uuid' must be set in '" + path + "' Here is a new one if you need one: " + UUID.v4());
+                        ASSERT.equal(typeof self._config.config.pio.domain, "string", "'config.pio.domain' must be set in: " + path);
+                        ASSERT.equal(typeof self._config.config.pio.namespace, "string", "'config.pio.namespace' must be set in: " + path);
+                        ASSERT.equal(typeof self._config.config.pio.ip, "string", "'config.pio.ip' must be set in: " + path);
+                    }
+
+                    if (/\/\.pio\.json$/.test(path)) {
+                        console.log("Skip loading profile as we are using a consolidated pio descriptor (" + path + ").");
+                        verify();
+                        ASSERT.equal(typeof self._config.config.pio.seedId, "string", "'config.pio.seedId' must be set in: " + path);
+                        ASSERT.equal(typeof self._config.config.pio.dataId, "string", "'config.pio.dataId' must be set in: " + path);
+                        ASSERT.equal(typeof self._config.config.pio.codebaseId, "string", "'config.pio.codebaseId' must be set in: " + path);
+                        ASSERT.equal(typeof self._config.config.pio.userId, "string", "'config.pio.userId' must be set in: " + path);
+                        ASSERT.equal(typeof self._config.config.pio.deployId, "string", "'config.pio.deployId' must be set in: " + path);
+                        ASSERT.equal(typeof self._config.config.pio.hostname, "string", "'config.pio.hostname' must be set in: " + path);
+                        return;
+                    }
+                    path = PATH.join(path, "..", "pio." + self._config.config.pio.profile + ".json");
+                    console.log("Using profile:", path);
+                    return Q.denodeify(FS.readJson)(path).then(function(profile) {
+
+                        self._config = DEEPMERGE(self._config, profile);
+    /*
+                        for (var key in self._config) {
+                            if (/^config\[cloud=.+\]$/.test(key)) {
+                                delete self._config[key];
+                            }
+                        }
+    */
+
+                        verify();
+
+                        self._config.config.pio.seedId = self._seedHash(["seed-id"]);
+                        // Use this to derive data namespaces. They will survive multiple deployments.
+                        self._config.config.pio.dataId = self._seedHash(["data-id", self._config.config.pio.seedId]);
+                        // Use this to derive orchestration and tooling namespaces. They are tied to the codebase uuid.
+                        self._config.config.pio.codebaseId = self._seedHash(["codebase-id", self._config.config.pio.seedId, self._config.uuid]);
+                        // Use this to derive data namepsaces for users of the codebase that can create multiple instances.
+                        self._config.config.pio.userId = self._seedHash(["user-id", self._config.config.pio.codebaseId]);
+                        // Use this to derive provisioning and runtime namespaces. They will change with every new IP.
+                        self._config.config.pio.deployId = self._instanceHash([
+                            "deployment-id",
+                            self._config.config.pio.dataId,
+                            self._config.config.pio.codebaseId,
+                            self._config.config.pio.userId
+                        ]);
+                        self._config.config.pio.hostname = self._config.config.pio.namespace + "-" + self._config.config.pio.deployId.substring(0, 7) + "." + self._config.config.pio.domain;
+
+    // TODO: Use `dnodes://`
+                        return resolveUri("dnode://" + self._config.config.pio.ip + ":8066");
+                    });
+                });
+            }
+            return Q.denodeify(function(callback) {
+                if (process.env.PIO_CONFIG_PATH) {
+                    return loadConfig(process.env.PIO_CONFIG_PATH).then(function() {
                         return callback(null);
                     }).fail(callback);
                 }
-                return loadConfig(PATH.join(seedPath, ".pio.json")).then(function() {
-                    return callback(null);
-                }).fail(callback);
-            });
-        })();
+                return FS.exists(PATH.join(seedPath, "pio.json"), function(exists) {
+                    if (exists) {
+                        return loadConfig(PATH.join(seedPath, "pio.json")).then(function() {
+                            return callback(null);
+                        }).fail(callback);
+                    }
+                    return loadConfig(PATH.join(seedPath, ".pio.json")).then(function() {
+                        return callback(null);
+                    }).fail(callback);
+                });
+            })();
 
-//        return loadConfig(PATH.join(seedPath, "pio.json")).then(function() {
-//        return resolveUri(targetUri).then(function() {
-//            ASSERT.equal(typeof self._dnodeHostname, "string");
-//            ASSERT.equal(typeof self._dnodePort, "number");            
-//        });
-    });
+    //        return loadConfig(PATH.join(seedPath, "pio.json")).then(function() {
+    //        return resolveUri(targetUri).then(function() {
+    //            ASSERT.equal(typeof self._dnodeHostname, "string");
+    //            ASSERT.equal(typeof self._dnodePort, "number");            
+    //        });
+        });
+    }
+
+    self._ready = self._load();
 }
 
 PIO.prototype.ready = function() {
@@ -235,6 +381,19 @@ PIO.prototype.ready = function() {
 PIO.prototype.getConfig = function(selector) {
     if (typeof selector === "string") {
         return this._config[selector];
+    }
+    throw new Error("NYI");
+}
+
+PIO.prototype.updateConfig = function(selector, value) {
+    var self = this;
+    if (selector === "config.pio.ip") {
+        return Q.denodeify(FS.readJson)(self._configPath).then(function(config) {
+            config.config.pio.ip = value;
+            return Q.denodeify(FS.outputFile)(self._configPath, JSON.stringify(config, null, 4));
+        }).then(function() {
+            return self._ready = self._load();
+        });
     }
     throw new Error("NYI");
 }
@@ -270,33 +429,36 @@ PIO.prototype.ensure = function(desiredConfig) {
 PIO.prototype._provisionPrerequisites = function(options) {
     var self = this;
     options = options || {};
+    console.log("Provisioning PIO prerequisites on VM".magenta);
     // We also re-try a few times in case SSH is not yet available.
     function attempt(count) {
         count += 1;
+        var hostname = options.ip || self._config.config.pio.ip || options.hostname || self._config.config.pio.hostname;
         return SSH.runRemoteCommands({
             targetUser: self._config.config.pio.user,
-            targetHostname: options.hostname || self._config.config.pio.hostname,
+            targetHostname: hostname,
             commands: [
                 // Make sure our user can write to the default install directory.
                 "sudo chown -f " + self._config.config.pio.user + ":" + self._config.config.pio.user + " /opt",
                 // Make sure some default directories exist
                 'if [ ! -d "/opt/bin" ]; then mkdir /opt/bin; fi',
                 'if [ ! -d "/opt/cache" ]; then mkdir /opt/cache; fi',
-                'if [ ! -d "/opt/logs" ]; then mkdir /opt/logs; fi',
+                'if [ ! -d "/opt/log" ]; then mkdir /opt/log; fi',
                 // Put `/opt/bin` onto system-wide PATH.
                 'sudo touch /etc/profile.d/pio.sh',
                 "sudo chown -f " + self._config.config.pio.user + ":" + self._config.config.pio.user + " /etc/profile.d/pio.sh",
                 'echo "export PATH=/opt/bin:\\$PATH" > /etc/profile.d/pio.sh',
-                'sudo chown root:root /etc/profile.d/pio.sh'
+                'sudo chown root:root /etc/profile.d/pio.sh',
+                'if [ ! -f "/opt/bin/activate.sh" ]; then',
+                '  echo "#!/bin/sh -e\nexport PATH=/opt/bin:$PATH\n" > /opt/bin/activate.sh',
+                'fi'
             ],
             workingDirectory: "/",
             keyPath: self._config.config.pio.keyPath
         }).fail(function(err) {
-console.log("MATCH ERROR MESSAGE [", err.message, "]");
-            // TODO: Match if fails due to SSH not being up yet.
-            if (/rsync exited with code '255'/.test(err.message)) {
+            if (/Operation timed out/.test(err.message)) {
                 if (count >=5) {
-                    throw new Error("Stopping after " + count + " attempts!");
+                    throw new Error("Stopping after " + count + " attempts! Cannot connect to IP: " + hostname);
                 }                
                 return attempt(count);
             }
@@ -344,13 +506,18 @@ PIO.prototype._normalizeServiceConfig = function(serviceAlias) {
         }
         serviceConfig.env.PATH = serviceConfig.env.PATH || "/opt/bin:$PATH";
 
+        serviceConfig.env.PIO_ALIAS = serviceConfig.config.pio.alias;
+        serviceConfig.env.PIO_LOG_BASE_PATH = PATH.join(serviceConfig.config.pio.deployBasePath, "log", serviceConfig.env.PIO_ALIAS);
+        serviceConfig.env.PIO_RUN_BASE_PATH = PATH.join("/var/run", serviceConfig.env.PIO_ALIAS);
+
+
         ASSERT.equal(typeof serviceConfig.config.pio.alias, "string");
         ASSERT.equal(typeof serviceConfig.config.pio.hostname, "string");
-        ASSERT.equal(typeof serviceConfig.config.pio.publicIP, "string");
+        ASSERT.equal(typeof serviceConfig.config.pio.ip, "string");
         ASSERT.equal(typeof serviceConfig.config.pio.keyPath, "string");
         ASSERT.equal(typeof serviceConfig.config.pio.user, "string");
         ASSERT.equal(typeof serviceConfig.config.pio.seedRepositories, "string");
-        ASSERT.equal(typeof serviceConfig.config.pio.plantBasePath, "string");
+        ASSERT.equal(typeof serviceConfig.config.pio.deployBasePath, "string");
 
         // Update service config to be relevant in new context.
         var serviceConfigStr = JSON.stringify(serviceConfig);
@@ -383,11 +550,15 @@ PIO.prototype._normalizeServiceConfig = function(serviceAlias) {
         }
         if (!FS.existsSync(serviceConfig.config.pio.seedPath)) throw new Error("Source path '" + serviceConfig.config.pio.seedPath + "' does not exist!");
 
-        if (serviceConfig.config.pio.plantPath) {
-            serviceConfig.config.pio.plantPath = serviceConfig.config.pio.plantPath;
+        if (serviceConfig.config.pio.deployPath) {
+            serviceConfig.config.pio.deployPath = serviceConfig.config.pio.deployPath;
         } else {
-            serviceConfig.config.pio.plantPath = PATH.join(serviceConfig.config.pio.plantBasePath, serviceAlias);
+            serviceConfig.config.pio.deployPath = PATH.join(serviceConfig.config.pio.deployBasePath, serviceAlias);
         }
+
+        // The unique universal identifier for the service (codebase + instance)
+        // POLICY: The same `uuid` must be used for the same service on each vm in a cluster.
+        serviceConfig.uuid = self._instanceHash(["uuid", serviceAlias]);
 
         return serviceConfig;
     });
@@ -403,6 +574,8 @@ PIO.prototype.deploy = function(serviceAlias, options) {
         return self._ready.then(function() {
 
             var services = Object.keys(self._config.provides);
+
+            console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._config.config.pio.keyPath + " " + self._config.config.pio.user + "@" + self._config.config.pio.ip).bold);
 
             console.log("Deploying services sequentially according to 'boot' order:".cyan);
 
@@ -458,12 +631,12 @@ PIO.prototype.deploy = function(serviceAlias, options) {
             }
             return loadPreviousSyncFiletreeInfo().then(function(previousSyncFiletreeInfo) {
                 var walker = new FSWALKER.Walker(serviceConfig.config.pio.seedPath);
-                var options = {};
-                options.returnIgnoredFiles = true;
-                options.includeDependencies = false;
-                options.respectDistignore = false;
-                options.respectNestedIgnore = true;
-                return Q.nbind(walker.walk, walker)(options).then(function(list) {
+                var opts = {};
+                opts.returnIgnoredFiles = true;
+                opts.includeDependencies = false;
+                opts.respectDistignore = false;
+                opts.respectNestedIgnore = true;
+                return Q.nbind(walker.walk, walker)(opts).then(function(list) {
                     syncFiletreeInfo = list;
                     var shasum = CRYPTO.createHash("sha1");
                     shasum.update(JSON.stringify(syncFiletreeInfo[0]));
@@ -471,7 +644,7 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                     serviceConfig.config.pio.seedHash = seedHash;
                     console.log("Our seed hash: " + serviceConfig.config.pio.seedHash);
                     return self._call("status", {
-                        plantPath: serviceConfig.config.pio.plantPath
+                        deployPath: serviceConfig.config.pio.deployPath
                     }).then(function(status) {
                         if (!status || !status.config || !status.config.pio || !status.config.pio.seedHash) {
                             console.log("No remote seed hash!");
@@ -573,13 +746,15 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                                 proc.stdout.on('data', function (data) {
                                     process.stdout.write(data);
                                 });
+                                var stderr = [];
                                 proc.stderr.on('data', function (data) {
+                                    stderr.push(data.toString());
                                     process.stderr.write(data);
                                 });
                                 proc.on('close', function (code) {
                                     if (code !== 0) {
                                         console.error("ERROR: Deploy script exited with code '" + code + "'");
-                                        return callback(new Error("Deploy script exited with code '" + code + "'"));
+                                        return callback(new Error("Deploy script exited with code '" + code + "' and stderr: " + stderr.join("")));
                                     }
                                     return callback(null);
                                 });
@@ -604,7 +779,7 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                                             if (response === true) return;
                                             return SSH.uploadFile({
                                                 targetUser: serviceConfig.config.pio.user,
-                                                targetHostname: serviceConfig.config.pio.publicIP,
+                                                targetHostname: serviceConfig.config.pio.ip,
                                                 source: source,
                                                 targetPath: targetPath,
                                                 keyPath: serviceConfig.config.pio.keyPath
@@ -620,7 +795,7 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                                             if (code === 0) return;
                                             return SSH.runRemoteCommands({
                                                 targetUser: serviceConfig.config.pio.user,
-                                                targetHostname: serviceConfig.config.pio.publicIP,
+                                                targetHostname: serviceConfig.config.pio.ip,
                                                 commands: commands,
                                                 workingDirectory: workingDirectory,
                                                 keyPath: serviceConfig.config.pio.keyPath
@@ -633,13 +808,13 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                                     return RSYNC.sync({
                                         sourcePath: serviceConfig.config.pio.seedPath,
                                         targetUser: serviceConfig.config.pio.user,
-                                        targetHostname: serviceConfig.config.pio.publicIP,
-                                        targetPath: serviceConfig.config.pio.plantPath,
+                                        targetHostname: serviceConfig.config.pio.ip,
+                                        targetPath: serviceConfig.config.pio.deployPath,
                                         keyPath: serviceConfig.config.pio.keyPath,
                                         excludeFromPath: FS.existsSync(ignoreRulesPath) ? ignoreRulesPath : null
                                     }).then(function() {
                                         return uploadSource(
-                                            PATH.join(serviceConfig.config.pio.plantPath, ".pio.json"),
+                                            PATH.join(serviceConfig.config.pio.deployPath, ".pio.json"),
                                             JSON.stringify(serviceConfig, null, 4)
                                         ).then(function() {
 
@@ -658,9 +833,14 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                                             }
                                             commands.push('echo "Calling postdeploy script:"');
                                             commands.push("sh postdeploy.sh");
-                                            return runRemoteCommands(commands, serviceConfig.config.pio.plantPath);
+                                            return runRemoteCommands(commands, serviceConfig.config.pio.deployPath);
                                         });
-                                    });
+                                    }).fail(function(err) {
+                                        if (/Operation timed out/.test(err.message)) {
+                                            throw new Error("Looks like we cannot connect to IP: " + serviceConfig.config.pio.ip);
+                                        }
+                                        throw err;
+                                    });;
                                 }
 
                                 return defaultDeployPlugin(self, serviceConfig).then(function() {
@@ -669,6 +849,23 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                             });
                         })();
                     });
+                }).fail(function(err) {
+                    if (/\/opt\/bin\/activate\.sh: No such file or directory/.test(err.message)) {
+                        console.log(("Looks like /opt/bin/activate.sh does not exist on instance. Let's create it along with other prerequisites.").magenta);
+                        if (options._repeatAfterProvisionPrerequisites) {
+                            console.error(err.stack);
+                            throw new Error("We already tried to provision the prerequisites but that failed. You need to resolve manually!");
+                        }
+                        return self._provisionPrerequisites().then(function() {
+                            var opts = {};
+                            for (var name in options) {
+                                opts[name] = options[name];
+                            }
+                            opts._repeatAfterProvisionPrerequisites = true;
+                            return self.deploy(serviceAlias, opts);
+                        });
+                    }
+                    throw err;
                 }).then(function() {
 
                     return Q.denodeify(FS.outputFile)(previoussyncFiletreeInfoPath, JSON.stringify(syncFiletreeInfo, null, 4));
@@ -692,7 +889,7 @@ PIO.prototype.test = function(serviceAlias) {
                 cwd: serviceConfig.config.pio.seedPath,
                 env: {
                     PATH: process.env.PATH,
-                    PIO_PUBLIC_IP: serviceConfig.config.pio.publicIP,
+                    PIO_PUBLIC_IP: serviceConfig.config.pio.ip,
                     PORT: serviceConfig.env.PORT
                 }
             });
@@ -726,7 +923,7 @@ PIO.prototype.status = function(serviceAlias) {
                 cwd: serviceConfig.config.pio.seedPath,
                 env: {
                     PATH: process.env.PATH,
-                    PIO_PUBLIC_IP: serviceConfig.config.pio.publicIP,
+                    PIO_PUBLIC_IP: serviceConfig.config.pio.ip,
                     PORT: serviceConfig.env.PORT
                 }
             });
@@ -755,88 +952,94 @@ module.exports.API = {
 
 if (require.main === module) {
 
-    var pio = new PIO(process.cwd());
-
     function error(err) {
         if (typeof err === "string") {
             console.error((""+err).red);
-        } else {
+        } else
+        if (typeof err === "object" && err.stack) {
             console.error((""+err.stack).red);
         }
         process.exit(1);
     }
 
-    return pio.ready().then(function() {
+    try {
 
-        return Q.denodeify(function(callback) {
+        var pio = new PIO(process.cwd());
 
-            var program = new COMMANDER.Command();
+        return pio.ready().then(function() {
 
-            program
-                .version(JSON.parse(FS.readFileSync(PATH.join(__dirname, "package.json"))).version)
-                .option("-v, --verbose", "Show verbose progress")
-                .option("--debug", "Show debug output")
-                .option("-f, --force", "Force an operation when it would normally be skipped");
+            return Q.denodeify(function(callback) {
 
-            var acted = false;
-        /*
-            program
-                .command("list [filter]")
-                .description("List services")
-                .action(function(path) {
-                    acted = true;
-                    return pio().list().then(function(list) {
-                        list.forEach(function(service) {
-                            console.log(service.alias);
-                        });
-                    }).fail(error);
-                });
-        */
-            program
-                .command("deploy [service alias]")
-                .description("Deploy a service")
-                .action(function(alias, options) {
-                    acted = true;
-                    return pio.deploy(alias, {
-                        force: program.force || false
-                    }).then(function() {
-                        return callback(null);
-                    }).fail(callback);
-                });
+                var program = new COMMANDER.Command();
 
-            program
-                .command("test <service alias>")
-                .description("Test a service")
-                .action(function(alias) {
-                    acted = true;
-                    return pio.test(alias).then(function() {
-                        return callback(null);
-                    }).fail(callback);
-                });
+                program
+                    .version(JSON.parse(FS.readFileSync(PATH.join(__dirname, "package.json"))).version)
+                    .option("-v, --verbose", "Show verbose progress")
+                    .option("--debug", "Show debug output")
+                    .option("-f, --force", "Force an operation when it would normally be skipped");
 
-            program
-                .command("status <service alias>")
-                .description("Get the status of a service")
-                .action(function(alias) {
-                    acted = true;
-                    return pio.status(alias).then(function() {
-                        return callback(null);
-                    }).fail(callback);
-                });
+                var acted = false;
+            /*
+                program
+                    .command("list [filter]")
+                    .description("List services")
+                    .action(function(path) {
+                        acted = true;
+                        return pio().list().then(function(list) {
+                            list.forEach(function(service) {
+                                console.log(service.alias);
+                            });
+                        }).fail(error);
+                    });
+            */
+                program
+                    .command("deploy [service alias]")
+                    .description("Deploy a service")
+                    .action(function(alias, options) {
+                        acted = true;
+                        return pio.deploy(alias, {
+                            force: program.force || false
+                        }).then(function() {
+                            return callback(null);
+                        }).fail(callback);
+                    });
 
-            program.parse(process.argv);
+                program
+                    .command("test <service alias>")
+                    .description("Test a service")
+                    .action(function(alias) {
+                        acted = true;
+                        return pio.test(alias).then(function() {
+                            return callback(null);
+                        }).fail(callback);
+                    });
 
-            if (!acted) {
-                var command = process.argv.slice(2).join(" ");
-                if (command) {
-                    console.error(("ERROR: Command '" + process.argv.slice(2).join(" ") + "' not found!").error);
+                program
+                    .command("status <service alias>")
+                    .description("Get the status of a service")
+                    .action(function(alias) {
+                        acted = true;
+                        return pio.status(alias).then(function() {
+                            return callback(null);
+                        }).fail(callback);
+                    });
+
+                program.parse(process.argv);
+
+                if (!acted) {
+                    var command = process.argv.slice(2).join(" ");
+                    if (command) {
+                        console.error(("ERROR: Command '" + process.argv.slice(2).join(" ") + "' not found!").error);
+                    }
+                    program.outputHelp();
+                    return callback(null);
                 }
-                program.outputHelp();
-                return callback(null);
-            }
-        })();
+            })();
 
-    }).then(function() {
-        return pio.shutdown();
-    }).fail(error);
+        }).then(function() {
+            return pio.shutdown();
+        }).fail(error);
+    } catch(err) {
+        return error(err);
+    }
 }
