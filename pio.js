@@ -119,7 +119,7 @@ var PIO = module.exports = function(seedPath) {
         return Q.resolve();
     }
 
-    // A hash that is affected by changes in `PIO_SEED_ID` and `PIO_SEED_SECRET` only.
+    // A hash that is affected by changes in `PIO_SEED_KEY` only.
     self._seedHash = function (parts) {
         var shasum = CRYPTO.createHash("sha1");
         if (self._config.config.pio.seedId) {
@@ -129,29 +129,65 @@ var PIO = module.exports = function(seedPath) {
             ].concat(parts).join(":"));
         } else {
             var ok = true;
-            if (typeof process.env.PIO_SEED_ID !== "string") {
+            if (typeof process.env.PIO_SEED_KEY !== "string") {
                 ok = false;
-                console.error(("'PIO_SEED_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (typeof process.env.PIO_SEED_SECRET !== "string") {
-                ok = false;
-                console.error(("'PIO_SEED_SECRET' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+                console.error(("'PIO_SEED_KEY' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
             }
             if (!ok) {
                 throw true;
             }            
             shasum.update([
                 "seed-hash",
-                process.env.PIO_SEED_ID,
-                process.env.PIO_SEED_SECRET
+                process.env.PIO_SEED_KEY
+            ].concat(parts).join(":"));
+        }
+        return shasum.digest("hex");
+    }
+
+    // A hash that is affected by changes in `PIO_USER_ID` only.
+    self._userHash = function (parts) {
+        var shasum = CRYPTO.createHash("sha1");
+        if (self._config.config.pio.userId) {
+            shasum.update([
+                "user-hash",
+                self._config.config.pio.userId
+            ].concat(parts).join(":"));
+        } else {
+            var ok = true;
+            if (typeof process.env.PIO_USER_ID !== "string") {
+                ok = false;
+                console.error(("'PIO_USER_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (!ok) {
+                throw true;
+            }            
+            shasum.update([
+                "user-hash",
+                process.env.PIO_USER_ID
+            ].concat(parts).join(":"));
+        }
+        return shasum.digest("hex");
+    }
+
+    // A hash that is affected by changes in `self._config.config.pio.namespace` only.
+    self._codebaseHash = function (parts) {
+        var shasum = CRYPTO.createHash("sha1");
+        if (self._config.config.pio.codebaseId) {
+            shasum.update([
+                "codebase-hash",
+                self._config.config.pio.codebaseId
+            ].concat(parts).join(":"));
+        } else {
+            shasum.update([
+                "codebase-hash",
+                self._config.config.pio.namespace
             ].concat(parts).join(":"));
         }
         return shasum.digest("hex");
     }
 
     // A hash that is affected by all properties describing the specific instance
-    // we are interacting with as well as `PIO_SEED_ID`, `PIO_SEED_SECRET`,
-    // `PIO_USER_ID` and `PIO_USER_SECRET`.
+    // we are interacting with as well as `PIO_SEED_KEY`, `PIO_USER_ID` and `PIO_USER_SECRET`.
     self._instanceHash = function (parts) {
         var shasum = CRYPTO.createHash("sha1");
         if (self._config.config.pio.deployId) {
@@ -164,13 +200,9 @@ var PIO = module.exports = function(seedPath) {
             ].concat(parts).join(":"));
         } else {
             var ok = true;
-            if (typeof process.env.PIO_SEED_ID !== "string") {
+            if (typeof process.env.PIO_SEED_KEY !== "string") {
                 ok = false;
-                console.error(("'PIO_SEED_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (typeof process.env.PIO_SEED_SECRET !== "string") {
-                ok = false;
-                console.error(("'PIO_SEED_SECRET' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+                console.error(("'PIO_SEED_KEY' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
             }
             if (typeof process.env.PIO_USER_ID !== "string") {
                 ok = false;
@@ -185,8 +217,7 @@ var PIO = module.exports = function(seedPath) {
             }            
             shasum.update([
                 "instance-hash",
-                process.env.PIO_SEED_ID,
-                process.env.PIO_SEED_SECRET,
+                process.env.PIO_SEED_KEY,
                 process.env.PIO_USER_ID,
                 process.env.PIO_USER_SECRET,
                 self._config.config.pio.domain,
@@ -295,7 +326,7 @@ var PIO = module.exports = function(seedPath) {
             }
             function loadConfig(path) {
                 // TODO: Use more generic PINF-based config loader here.
-                console.log("Using config:", path);
+//                console.log("Using config:", path);
                 return Q.denodeify(FS.readJson)(path).then(function(config) {
                     self._configPath = path;
                     self._config = config;
@@ -319,7 +350,7 @@ var PIO = module.exports = function(seedPath) {
                         return;
                     }
                     path = PATH.join(path, "..", "pio." + self._config.config.pio.profile + ".json");
-                    console.log("Using profile:", path);
+//                    console.log("Using profile:", path);
                     return Q.denodeify(FS.readJson)(path).then(function(profile) {
 
                         self._config = DEEPMERGE(self._config, profile);
@@ -330,16 +361,78 @@ var PIO = module.exports = function(seedPath) {
                             }
                         }
     */
-
                         verify();
 
+                        self._config.config.pio.seedIdSegmentPrefix = self._config.config.pio.seedIdSegmentPrefix || "s";
+                        self._config.config.pio.codebaseIdSegmentPrefix = self._config.config.pio.codebaseIdSegmentPrefix || "c";
+                        self._config.config.pio.userIdSegmentPrefix = self._config.config.pio.userIdSegmentPrefix || "u";
+                        self._config.config.pio.deployIdSegmentPrefix = self._config.config.pio.deployIdSegmentPrefix || "d";
+                        self._config.config.pio.glimpseLength = self._config.config.pio.glimpseLength || 7;
+
+                        // WARNING: DO NOT MODIFY THIS! IF MODIFIED IT WILL BREAK COMPATIBILITY WITH ADDRESSING
+                        //          EXISTING DEPLOYMENTS!
                         self._config.config.pio.seedId = self._seedHash(["seed-id"]);
+                        var seedIdSegment =
+                            self._config.config.pio.seedIdSegmentPrefix +
+                            self._config.config.pio.seedId.substring(
+                                0,
+                                0 + self._config.config.pio.glimpseLength
+                            );
+                        self._config.config.pio.seedId = [
+                            seedIdSegment,
+                            self._config.config.pio.seedId.substring(
+                                seedIdSegment.length
+                            )
+                        ].join("-").substring(0, 40);
+
                         // Use this to derive data namespaces. They will survive multiple deployments.
-                        self._config.config.pio.dataId = self._seedHash(["data-id", self._config.config.pio.seedId]);
+                        self._config.config.pio.dataId = [
+                            // We prefix the seedId so we can group multiple data IDs per seed ID.
+                            seedIdSegment,
+                            self._seedHash(["data-id", self._config.config.pio.seedId]).substring(
+                                seedIdSegment.length
+                            )
+                        ].join("-");
+
                         // Use this to derive orchestration and tooling namespaces. They are tied to the codebase uuid.
-                        self._config.config.pio.codebaseId = self._seedHash(["codebase-id", self._config.config.pio.seedId, self._config.uuid]);
-                        // Use this to derive data namepsaces for users of the codebase that can create multiple instances.
-                        self._config.config.pio.userId = self._seedHash(["user-id", self._config.config.pio.codebaseId]);
+                        self._config.config.pio.codebaseId = self._codebaseHash([
+                            "codebase-id",
+                            self._config.uuid
+                        ]);
+                        var codebaseSegment =
+                            self._config.config.pio.codebaseIdSegmentPrefix +
+                            self._config.config.pio.codebaseId.substring(
+                                seedIdSegment.length,
+                                seedIdSegment.length + self._config.config.pio.glimpseLength
+                            );
+                        self._config.config.pio.codebaseId = [
+                            // We prefix the seedIdSegment so we can group multiple codebase IDs per seed ID.
+                            seedIdSegment,
+                            codebaseSegment,
+                            self._config.config.pio.codebaseId.substring(
+                                seedIdSegment.length + codebaseSegment.length
+                            )
+                        ].join("-").substring(0, 40);
+
+                        // Use this to derive data namespaces for users of the codebase that can create multiple instances.
+                        self._config.config.pio.userId = self._userHash(["user-id"]);
+                        var userSegment = 
+                            self._config.config.pio.userIdSegmentPrefix +
+                            self._config.config.pio.userId.substring(
+                                seedIdSegment.length + codebaseSegment.length,
+                                seedIdSegment.length + codebaseSegment.length + self._config.config.pio.glimpseLength
+                            );
+                        self._config.config.pio.userId = [
+                            // We prefix the seedIdSegment so we can group multiple user IDs per seed ID.
+                            seedIdSegment,
+                            // We insert the codebaseSegment so we can group multiple user IDs per codebase ID.
+                            codebaseSegment,
+                            userSegment,
+                            self._config.config.pio.userId.substring(
+                                seedIdSegment.length + codebaseSegment.length
+                            )
+                        ].join("-").substring(0, 40);
+
                         // Use this to derive provisioning and runtime namespaces. They will change with every new IP.
                         self._config.config.pio.deployId = self._instanceHash([
                             "deployment-id",
@@ -347,9 +440,33 @@ var PIO = module.exports = function(seedPath) {
                             self._config.config.pio.codebaseId,
                             self._config.config.pio.userId
                         ]);
-                        self._config.config.pio.hostname = self._config.config.pio.namespace + "-" + self._config.config.pio.deployId.substring(0, 7) + "." + self._config.config.pio.domain;
+                        var deploySegment =
+                            self._config.config.pio.deployIdSegmentPrefix +
+                            self._config.config.pio.deployId.substring(
+                                seedIdSegment.length + codebaseSegment.length,
+                                seedIdSegment.length + codebaseSegment.length + self._config.config.pio.glimpseLength
+                        );
+                        self._config.config.pio.deployId = [
+                            // We prefix the seedIdSegment so we can group multiple deploy IDs per seed ID.
+                            seedIdSegment,
+                            // We insert the codebaseSegment so we can group multiple deploy IDs per codebase ID.
+                            codebaseSegment,
+                            deploySegment,
+                            self._config.config.pio.deployId.substring(
+                                seedIdSegment.length + codebaseSegment.length + deploySegment.length
+                            )
+                        ].join("-").substring(0, 40);
 
-    // TODO: Use `dnodes://`
+
+                        self._config.config.pio.hostname = [
+                            self._config.config.pio.namespace,
+                            "-",
+                            deploySegment,
+                            ".",
+                            self._config.config.pio.domain
+                        ].join("");
+
+// TODO: Use `dnodes://`
                         return resolveUri("dnode://" + self._config.config.pio.ip + ":8066");
                     });
                 });
@@ -621,7 +738,7 @@ PIO.prototype.deploy = function(serviceAlias, options) {
         var previoussyncFiletreeInfoPath = PATH.join(serviceConfig.config.pio.seedPath, ".pio.sync");
         var syncFiletreeInfo = null;
         function hasChanged() {
-            console.log("Check if changed");
+//            console.log("Check if changed");
             function loadPreviousSyncFiletreeInfo() {
                 var deferred = Q.defer();
                 FS.exists(previoussyncFiletreeInfoPath, function(exists) {
@@ -646,7 +763,7 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                     shasum.update(JSON.stringify(syncFiletreeInfo[0]));
                     var seedHash = shasum.digest("hex");
                     serviceConfig.config.pio.seedHash = seedHash;
-                    console.log("Our seed hash: " + serviceConfig.config.pio.seedHash);
+//                    console.log("Our seed hash: " + serviceConfig.config.pio.seedHash);
                     return self._call("status", {
                         deployPath: serviceConfig.config.pio.deployPath
                     }).then(function(status) {
@@ -654,7 +771,7 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                             console.log("No remote seed hash!");
                             return seedHash;
                         }
-                        console.log("Remote seed hash: " + status.config.pio.seedHash);
+//                        console.log("Remote seed hash: " + status.config.pio.seedHash);
                         if (status.config.pio.seedHash !== seedHash) {
                             console.log("Seed hash has changed!".cyan);
                             if (previousSyncFiletreeInfo) {
