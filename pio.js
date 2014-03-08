@@ -35,8 +35,9 @@ var PIO = module.exports = function(seedPath) {
     var dnodeRemote = null;
     var dnodeTimeout = null;
     var dnodeEvents = new EVENTS.EventEmitter();
+    self._dnodeCanConnect = false;
     self._call = function(method, args) {
-        if (!self._dnodePort || !self._dnodeHostname) {
+        if (!self._dnodeCanConnect && method !== "ping") {
             return Q.resolve(null);
         }
         // Close the connection one second after last response if no
@@ -196,6 +197,40 @@ var PIO = module.exports = function(seedPath) {
         return shasum.digest("hex");
     }
 
+    self._testDnodeConnect = function() {
+        var self = this;
+        if (!self._dnodeHostname || !self._dnodePort) {
+            return Q.resolve(false);
+        }
+        var deferred = Q.defer();
+        var timeout = setTimeout(function() {
+            console.error("Timeout! Could not connect to: dnode://" + self._dnodeHostname + ":" + self._dnodePort);
+            self._dnodeCanConnect = false;
+            return deferred.resolve(false);
+        }, 1000);
+        var req = {
+            timeClient: Date.now()
+        }
+        self._call("ping", req).then(function(res) {
+            try {
+                ASSERT.equal(req.timeClient, res.timeClient);
+                // TODO: Track time offset.
+                clearTimeout(timeout);
+                self._dnodeCanConnect = true;
+                return deferred.resolve(true);
+            } catch(err) {
+                clearTimeout(timeout);
+                self._dnodeCanConnect = false;
+                return deferred.resolve(false);
+            }
+        }).fail(function(err) {
+            clearTimeout(timeout);
+            self._dnodeCanConnect = false;
+            return deferred.resolve(false);
+        });
+        return deferred.promise;
+    }
+
     self._load = function() {
         return Q.fcall(function() {
 
@@ -228,34 +263,7 @@ var PIO = module.exports = function(seedPath) {
                         self._dnodeHostname = uriParsed.hostname;
                         self._dnodePort = parseInt(uriParsed.port) || 8066;
 
-                        function testConnect() {
-                            var deferred = Q.defer();
-                            var timeout = setTimeout(function() {
-                                return deferred.reject(new Error("Timeout! Could not connect to: " + uri));
-                            }, 1000);
-                            var req = {
-                                timeClient: Date.now()
-                            }
-                            self._call("ping", req).then(function(res) {
-                                try {
-                                    ASSERT.equal(req.timeClient, res.timeClient);
-                                    // TODO: Track time offset.
-                                    clearTimeout(timeout);
-                                    return deferred.resolve();
-                                } catch(err) {
-                                    return deferred.reject(err);
-                                }
-                            }).fail(function(err) {
-                                clearTimeout(timeout);
-                                return deferred.reject(err);
-                            });
-                            return deferred.promise;
-                        }
-
-                        return testConnect().then(deferred.resolve).fail(function(err) {
-                            self._dnodeHostname = null;
-                            self._dnodePort = null;
-                        });
+                        return  self._testDnodeConnect().then(deferred.resolve).fail(deferred.reject);
     /*
     // TODO: Refine this.
                     } else
@@ -363,12 +371,6 @@ var PIO = module.exports = function(seedPath) {
                     }).fail(callback);
                 });
             })();
-
-    //        return loadConfig(PATH.join(seedPath, "pio.json")).then(function() {
-    //        return resolveUri(targetUri).then(function() {
-    //            ASSERT.equal(typeof self._dnodeHostname, "string");
-    //            ASSERT.equal(typeof self._dnodePort, "number");            
-    //        });
         });
     }
 
@@ -450,11 +452,19 @@ PIO.prototype._provisionPrerequisites = function(options) {
             workingDirectory: "/",
             keyPath: self._config.config.pio.keyPath
         }).fail(function(err) {
-            if (/Operation timed out/.test(err.message)) {
-                if (count >=5) {
+            if (
+                /Connection refused/.test(err.message) ||
+                /Operation timed out/.test(err.message)
+            ) {
+                if (count >= 30) {
                     throw new Error("Stopping after " + count + " attempts! Cannot connect to IP: " + hostname);
-                }                
-                return attempt(count);
+                }
+                console.log("Trying again in 3 seconds ...");
+                var deferred = Q.defer();
+                setTimeout(function() {
+                    return attempt(count).then(deferred.resolve).fail(deferred.reject);
+                }, 3000);
+                return deferred.promise;
             }
             throw err;
         });
@@ -464,10 +474,20 @@ PIO.prototype._provisionPrerequisites = function(options) {
 
 PIO.prototype._deployBootServices = function(options) {
     var self = this;
+    console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._config.config.pio.keyPath + " " + self._config.config.pio.user + "@" + self._config.config.pio.ip).bold);
+    console.log("Deploying services sequentially according to 'boot' order:".cyan);
     var done = Q.resolve();
-    self.getConfig("boot").forEach(function(service) {
+    self._config.boot.forEach(function(serviceAlias) {
         done = Q.when(done, function() {
-            return self.deploy(service, options);
+            return self.deploy(serviceAlias, options).then(function() {
+                if (!self._dnodeCanConnect) {
+                    return self._testDnodeConnect().then(function(canConnect) {
+                        if (canConnect) {
+                            console.log("Switching to using dnode transport where possible!".green);
+                        }
+                    });
+                }
+            });
         });
     });
     return done;
@@ -570,18 +590,7 @@ PIO.prototype.deploy = function(serviceAlias, options) {
 
             var services = Object.keys(self._config.provides);
 
-            console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._config.config.pio.keyPath + " " + self._config.config.pio.user + "@" + self._config.config.pio.ip).bold);
-
-            console.log("Deploying services sequentially according to 'boot' order:".cyan);
-
-            var done = Q.resolve();
-            self._config.boot.forEach(function(serviceAlias) {
-                done = Q.when(done, function() {
-                    return self.deploy(serviceAlias, options);
-                });
-            });
-
-            return Q.when(done, function() {
+            return Q.when(self._deployBootServices(options), function() {
 
                 // TODO: Deploy in parallel by default if nothing has changed.
                 console.log("Deploying remaining services sequentially:".cyan);
