@@ -22,6 +22,7 @@ const DIRSUM = require("dirsum");
 const FSWALKER = require("./lib/fswalker");
 const JSON_DIFF_PATCH = require("jsondiffpatch");
 const EXEC = require("child_process").exec;
+const NET = require("net");
 
 COLORS.setTheme({
     error: 'red'
@@ -30,6 +31,11 @@ COLORS.setTheme({
 
 var PIO = module.exports = function(seedPath) {
     var self = this;
+
+    self.API = {
+        Q: Q,
+        DEEPCOPY: DEEPCOPY
+    };
 
     var dnodeClient = null;
     var dnodeRemote = null;
@@ -406,105 +412,147 @@ var PIO = module.exports = function(seedPath) {
                     self._configPath = path;
                     self._config = config;
 
-                    function verify() {
-                        ASSERT.equal(typeof self._config.uuid, "string", "'uuid' must be set in '" + path + "' Here is a new one if you need one: " + UUID.v4());
-                        ASSERT.equal(typeof self._config.config.pio.domain, "string", "'config.pio.domain' must be set in: " + path);
-                        ASSERT.equal(/^[a-z0-9-\.]+$/.test(self._config.config.pio.domain), true, "'config.pio.domain' must only contain '[a-z0-9-\.]' in: " + path);
-                        ASSERT.equal(typeof self._config.config.pio.namespace, "string", "'config.pio.namespace' must be set in: " + path);
-                        ASSERT.equal(/^[a-z0-9-]+$/.test(self._config.config.pio.namespace), true, "'config.pio.namespace' must only contain '[a-z0-9-]' in: " + path);
-                        ASSERT.equal(typeof self._config.config.pio.ip, "string", "'config.pio.ip' must be set in: " + path);
-                        ASSERT.equal(typeof self._config.config.pio.keyPath, "string", "'config.pio.keyPath' must be set in '" + path + "'");
-                    }
-
-                    if (/\/\.pio\.json$/.test(path)) {
-                        console.log("Skip loading profile as we are using a consolidated pio descriptor (" + path + ").");
-                        verify();
-                        ASSERT.equal(typeof self._config.config.pio.epochId, "string", "'config.pio.epochId' must be set in: " + path);
-                        ASSERT.equal(typeof self._config.config.pio.seedId, "string", "'config.pio.seedId' must be set in: " + path);
-                        ASSERT.equal(typeof self._config.config.pio.dataId, "string", "'config.pio.dataId' must be set in: " + path);
-                        ASSERT.equal(typeof self._config.config.pio.codebaseId, "string", "'config.pio.codebaseId' must be set in: " + path);
-                        ASSERT.equal(typeof self._config.config.pio.userId, "string", "'config.pio.userId' must be set in: " + path);
-                        ASSERT.equal(typeof self._config.config.pio.instanceId, "string", "'config.pio.instanceId' must be set in: " + path);
-                        ASSERT.equal(typeof self._config.config.pio.hostname, "string", "'config.pio.hostname' must be set in: " + path);
-                        return;
-                    }
-                    path = PATH.join(path, "..", "pio." + self._config.config.pio.profile + ".json");
-//                    console.log("Using profile:", path);
-                    return Q.denodeify(FS.readJson)(path).then(function(profile) {
-
-                        self._config = DEEPMERGE(self._config, profile);
-    /*
-                        for (var key in self._config) {
-                            if (/^config\[cloud=.+\]$/.test(key)) {
-                                delete self._config[key];
-                            }
+                    function unlock() {
+                        if (
+                            !self._config.config ||
+                            !self._config.config["pio.cli.local"] ||
+                            !self._config.config["pio.cli.local"].plugins ||
+                            !self._config.config["pio.cli.local"].plugins.unlock
+                        ) return Q.resolve(null);
+                        var deferred = Q.defer();
+                        try {
+                            ASSERT.equal(/^\.\/.*\.js$/.test(self._config.config["pio.cli.local"].plugins.unlock), true, "'config[pio.cli.local].plugins.unlock' value must be a relative path to a nodejs module (e.g. './plugin.js')");
+                            var path = PATH.join(self._configPath, "..", self._config.config["pio.cli.local"].plugins.unlock);
+                            require.async(path, function (api) {
+                                ASSERT.equal(typeof api.unlock, "function", "Plugin at '" + path + "' does not export method 'unlock'!");
+                                return api.unlock(self).then(deferred.resolve).fail(deferred.reject);
+                            }, deferred.reject);
+                        } catch(err) {
+                            deferred.reject(err);
                         }
-    */
-                        verify();
+                        return deferred.promise;
+                    }
 
-                        var c = self._config.config.pio;
+                    return unlock().then(function(unlockInfo) {
 
-                        c.idSegmentLength = c.idSegmentLength || 4;
-                        c.epochIdSegmentPrefix = c.epochIdSegmentPrefix || "e";
-                        c.seedIdSegmentPrefix = c.seedIdSegmentPrefix || "s";
-                        c.codebaseIdSegmentPrefix = c.codebaseIdSegmentPrefix || "c";
-                        c.userIdSegmentPrefix = c.userIdSegmentPrefix || "u";
-                        c.instanceIdSegmentPrefix = c.instanceIdSegmentPrefix || "i";
+                        // TODO: Use `unlockInfo` below.
+                        if (unlockInfo) {
+                            throw new Error("TODO: Use `unlockInfo`");
+                        }
 
-                        // WARNING: DO NOT MODIFY THIS! IF MODIFIED IT WILL BREAK COMPATIBILITY WITH ADDRESSING
-                        //          EXISTING DEPLOYMENTS!
+                        function verify() {
+                            ASSERT.equal(typeof self._config.uuid, "string", "'uuid' must be set in '" + self._configPath + "' Here is a new one if you need one: " + UUID.v4());
+                            ASSERT.equal(typeof self._config.config.pio.domain, "string", "'config.pio.domain' must be set in: " + self._configPath);
+                            ASSERT.equal(/^[a-z0-9-\.]+$/.test(self._config.config.pio.domain), true, "'config.pio.domain' must only contain '[a-z0-9-\.]' in: " + self._configPath);
+                            ASSERT.equal(typeof self._config.config.pio.namespace, "string", "'config.pio.namespace' must be set in: " + self._configPath);
+                            ASSERT.equal(/^[a-z0-9-]+$/.test(self._config.config.pio.namespace), true, "'config.pio.namespace' must only contain '[a-z0-9-]' in: " + self._configPath);
+                            ASSERT.equal(typeof self._config.config.pio.ip, "string", "'config.pio.ip' must be set in: " + self._configPath);
+                            ASSERT.equal(typeof self._config.config.pio.keyPath, "string", "'config.pio.keyPath' must be set in '" + self._configPath + "'");
+                        }
 
-                        c.epochId = self._epochHash(["epoch-id"]);
-                        var epochIdSegment = c.epochIdSegmentPrefix + c.epochId.substring(0, c.idSegmentLength);
-                        c.epochId = [epochIdSegment, c.namespace, c.epochId.substring(c.idSegmentLength)].join("_");
+                        if (/\/\.pio\.json$/.test(self._configPath)) {
+                            console.log("Skip loading profile as we are using a consolidated pio descriptor (" + self._configPath + ").");
+                            verify();
+                            ASSERT.equal(typeof self._config.config.pio.epochId, "string", "'config.pio.epochId' must be set in: " + self._configPath);
+                            ASSERT.equal(typeof self._config.config.pio.seedId, "string", "'config.pio.seedId' must be set in: " + self._configPath);
+                            ASSERT.equal(typeof self._config.config.pio.dataId, "string", "'config.pio.dataId' must be set in: " + self._configPath);
+                            ASSERT.equal(typeof self._config.config.pio.codebaseId, "string", "'config.pio.codebaseId' must be set in: " + self._configPath);
+                            ASSERT.equal(typeof self._config.config.pio.userId, "string", "'config.pio.userId' must be set in: " + self._configPath);
+                            ASSERT.equal(typeof self._config.config.pio.instanceId, "string", "'config.pio.instanceId' must be set in: " + self._configPath);
+                            ASSERT.equal(typeof self._config.config.pio.hostname, "string", "'config.pio.hostname' must be set in: " + self._configPath);
+                            return;
+                        }
+                        path = PATH.join(self._configPath, "..", "pio." + self._config.config.pio.profile + ".json");
+    //                    console.log("Using profile:", path);
+                        return Q.denodeify(FS.readJson)(path).then(function(profile) {
+                            self._profilePath = path;
+                            self._config = DEEPMERGE(self._config, profile);
 
-                        c.seedId = self._seedHash(["seed-id", c.epochId]);
-                        var seedIdSegment = c.seedIdSegmentPrefix + c.seedId.substring(0, c.idSegmentLength);
-                        c.seedId = [epochIdSegment, c.namespace, seedIdSegment, c.seedId.substring(c.idSegmentLength)].join("_");
+                            // TODO: Remvoe this when we use dynamic config system.
+                            var configStr = JSON.stringify(self._config.config);
+                            configStr = configStr.replace(/\{\{env\.DNSIMPLE_EMAIL\}\}/g, process.env.DNSIMPLE_EMAIL);
+                            configStr = configStr.replace(/\{\{env\.DNSIMPLE_TOKEN\}\}/g, process.env.DNSIMPLE_TOKEN);
+                            self._config.config = JSON.parse(configStr);
 
-                        // Use this to derive data namespaces. They will survive multiple deployments.
-                        c.dataId = [epochIdSegment, c.namespace, seedIdSegment, self._seedHash(["data-id", c.epochId, c.seedId])].join("_");
-
-                        // Use this to derive orchestration and tooling namespaces. They are tied to the codebase uuid.
-                        c.codebaseId = self._codebaseHash(["codebase-id", c.epochId, self._config.uuid]);
-                        var codebaseSegment = c.codebaseIdSegmentPrefix + c.codebaseId.substring(0, c.idSegmentLength);
-                        c.codebaseId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, c.codebaseId.substring(c.idSegmentLength)].join("_");
-
-                        // Use this to derive data namespaces for users of the codebase that can create multiple instances.
-                        c.userId = self._userHash(["user-id", c.epochId]);
-                        c.userSecret = self._userSecretHash(["user-secret", c.epochId, c.userId]);
-                        var userSegment = c.userIdSegmentPrefix + c.userId.substring(0, c.idSegmentLength);
-                        c.userId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, c.userId.substring(c.idSegmentLength)].join("_");
-
-                        // Use this to derive provisioning and runtime namespaces. They will change with every new IP.
-                        c.instanceId = self._instanceHash(["deployment-id", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId]);
-                        c.instanceSecret = self._instanceHash(["instance-secret", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId, c.instanceId]);
-                        var deploySegment = c.instanceIdSegmentPrefix + c.instanceId.substring(0, c.idSegmentLength);
-                        c.instanceId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, deploySegment, c.instanceId.substring(c.idSegmentLength)].join("_");
-
-                        c.hostname = [c.namespace, "-", deploySegment, ".", c.domain].join("");
-
-                        function getPublicKey() {
-                            var deferred = Q.defer();
-                            var pubKeyPath = c.keyPath + ".pub";
-                            FS.exists(pubKeyPath, function(exists) {
-                                if (exists) {
-                                    return FS.readFile(pubKeyPath, "utf8", function(err, data) {
-                                        if (err) return deferred.reject(err);
-                                        return deferred.resolve(data.match(/^(\S+\s+\S+)(\s+\S+)?\n?$/)[1]);
-                                    });
+        /*
+                            for (var key in self._config) {
+                                if (/^config\[cloud=.+\]$/.test(key)) {
+                                    delete self._config[key];
                                 }
-                                return deferred.reject(new Error("Use 'ssh-keygen -y -f PRIVATE_KEY_PATH' to get public key from private key"));
+                            }
+        */
+                            verify();
 
-                            });
-                            return deferred.promise;
-                        }
+                            var c = self._config.config.pio;
 
-                        return getPublicKey().then(function(publicKey) {
+                            c.idSegmentLength = c.idSegmentLength || 4;
+                            c.epochIdSegmentPrefix = c.epochIdSegmentPrefix || "e";
+                            c.seedIdSegmentPrefix = c.seedIdSegmentPrefix || "s";
+                            c.codebaseIdSegmentPrefix = c.codebaseIdSegmentPrefix || "c";
+                            c.userIdSegmentPrefix = c.userIdSegmentPrefix || "u";
+                            c.instanceIdSegmentPrefix = c.instanceIdSegmentPrefix || "i";
 
-                            c.keyPub = publicKey;
+                            // WARNING: DO NOT MODIFY THIS! IF MODIFIED IT WILL BREAK COMPATIBILITY WITH ADDRESSING
+                            //          EXISTING DEPLOYMENTS!
+
+                            c.epochId = self._epochHash(["epoch-id"]);
+                            var epochIdSegment = c.epochIdSegmentPrefix + c.epochId.substring(0, c.idSegmentLength);
+                            c.epochId = [epochIdSegment, c.namespace, c.epochId.substring(c.idSegmentLength)].join("_");
+
+                            c.seedId = self._seedHash(["seed-id", c.epochId]);
+                            var seedIdSegment = c.seedIdSegmentPrefix + c.seedId.substring(0, c.idSegmentLength);
+                            c.seedId = [epochIdSegment, c.namespace, seedIdSegment, c.seedId.substring(c.idSegmentLength)].join("_");
+
+                            // Use this to derive data namespaces. They will survive multiple deployments.
+                            c.dataId = [epochIdSegment, c.namespace, seedIdSegment, self._seedHash(["data-id", c.epochId, c.seedId])].join("_");
+
+                            // Use this to derive orchestration and tooling namespaces. They are tied to the codebase uuid.
+                            c.codebaseId = self._codebaseHash(["codebase-id", c.epochId, self._config.uuid]);
+                            var codebaseSegment = c.codebaseIdSegmentPrefix + c.codebaseId.substring(0, c.idSegmentLength);
+                            c.codebaseId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, c.codebaseId.substring(c.idSegmentLength)].join("_");
+
+                            // Use this to derive data namespaces for users of the codebase that can create multiple instances.
+                            c.userId = self._userHash(["user-id", c.epochId]);
+                            c.userSecret = self._userSecretHash(["user-secret", c.epochId, c.userId]);
+                            var userSegment = c.userIdSegmentPrefix + c.userId.substring(0, c.idSegmentLength);
+                            c.userId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, c.userId.substring(c.idSegmentLength)].join("_");
+
+                            // Use this to derive provisioning and runtime namespaces. They will change with every new IP.
+                            c.instanceId = self._instanceHash(["deployment-id", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId]);
+                            c.instanceSecret = self._instanceHash(["instance-secret", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId, c.instanceId]);
+                            var deploySegment = c.instanceIdSegmentPrefix + c.instanceId.substring(0, c.idSegmentLength);
+                            c.instanceId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, deploySegment, c.instanceId.substring(c.idSegmentLength)].join("_");
+
+                            c.hostname = [c.namespace, "-", deploySegment, ".", c.domain].join("");
+
+                            function getPublicKey() {
+                                var deferred = Q.defer();
+                                var pubKeyPath = c.keyPath + ".pub";
+                                FS.exists(pubKeyPath, function(exists) {
+                                    if (exists) {
+                                        return FS.readFile(pubKeyPath, "utf8", function(err, data) {
+                                            if (err) return deferred.reject(err);
+                                            return deferred.resolve(data.match(/^(\S+\s+\S+)(\s+\S+)?\n?$/)[1]);
+                                        });
+                                    }
+                                    return deferred.reject(new Error("Use 'ssh-keygen -y -f PRIVATE_KEY_PATH' to get public key from private key"));
+
+                                });
+                                return deferred.promise;
+                            }
+
+                            return getPublicKey().then(function(publicKey) {
+                                c.keyPub = publicKey;
+
+                                var configStr = JSON.stringify(self._config.config);
+                                configStr = configStr.replace(/\{\{config\.pio\.hostname\}\}/g, c.hostname);
+                                configStr = configStr.replace(/\{\{config\.pio\.domain\}\}/g, c.domain);
+                                configStr = configStr.replace(/\{\{config\.pio\.ip\}\}/g, c.ip);
+                                self._config.config = JSON.parse(configStr);
+
 // TODO: Use `dnodes://`
-                            return resolveUri("dnode://" + c.ip + ":8066");
+                                return resolveUri("dnode://" + c.ip + ":8066");
+                            });
                         });
                     });
                 });
@@ -530,6 +578,8 @@ var PIO = module.exports = function(seedPath) {
     }
 
     self._ready = self._load();
+
+    self._ensureInfo = null;
 }
 
 PIO.prototype.ready = function() {
@@ -554,6 +604,70 @@ PIO.prototype.updateConfig = function(selector, value) {
         });
     }
     throw new Error("NYI");
+}
+
+PIO.prototype.ensure = function() {
+    var self = this;
+    if (self._ensureInfo) {
+        return Q.resolve(self._ensureInfo);
+    }
+    function ensure() {
+        if (
+            !self._config.config ||
+            !self._config.config.pio ||
+            !self._config.config.pio.ip ||
+            !self._config.config["pio.cli.local"] ||
+            !self._config.config["pio.cli.local"].plugins ||
+            !self._config.config["pio.cli.local"].plugins.ensure
+        ) return Q.resolve(null);
+        function callPlugin(plugin, state) {
+            var deferred = Q.defer();
+            try {
+                ASSERT.equal(/^\.\/.*\.js$/.test(plugin), true, "'config[pio.cli.local].plugins.ensure' value must be a relative path to a nodejs module (e.g. './plugin.js')");
+                var path = PATH.join(self._configPath, "..", plugin);
+                require.async(path, function (api) {
+                    ASSERT.equal(typeof api.ensure, "function", "Plugin at '" + path + "' does not export method 'ensure'!");
+                    return api.ensure(self, DEEPCOPY(state)).then(function(ensureInfo) {
+                        self._ensureInfo = ensureInfo;
+                        return deferred.resolve(self._ensureInfo);
+                    }).fail(deferred.reject);
+                }, deferred.reject);
+            } catch(err) {
+                deferred.reject(err);
+            }
+            return deferred.promise;
+        }
+        var plugins = self._config.config["pio.cli.local"].plugins.ensure;
+        if (!Array.isArray(plugins)) {
+            plugins = [ plugins ];
+        }
+        var done = Q.resolve();
+        var state = {
+            "pio": {
+                hostname: self._config.config.pio.hostname
+            },
+            "pio.vm": {
+                ip: self._config.config.pio.ip,
+                dnodePort: self._dnodePort
+            }
+        };
+        plugins.forEach(function(plugin) {
+            done = Q.when(done, function() {
+                return callPlugin(plugin, state).then(function(_state) {
+                    state = DEEPMERGE(state, _state);
+                });
+            });
+        });
+        return done.then(function() {
+            return state;
+        });
+    }
+    return ensure().then(function(ensureInfo) {
+
+console.log("ensureInfo", ensureInfo);
+
+
+    });
 }
 
 PIO.prototype.status = function() {
@@ -1140,97 +1254,100 @@ if (require.main === module) {
 
         return pio.ready().then(function() {
 
-            return Q.denodeify(function(callback) {
+            return pio.ensure().then(function() {
 
-                var program = new COMMANDER.Command();
+                return Q.denodeify(function(callback) {
 
-                program
-                    .version(JSON.parse(FS.readFileSync(PATH.join(__dirname, "package.json"))).version)
-                    .option("-v, --verbose", "Show verbose progress")
-                    .option("--debug", "Show debug output")
-                    .option("-f, --force", "Force an operation when it would normally be skipped");
+                    var program = new COMMANDER.Command();
 
-                var acted = false;
-            /*
-                program
-                    .command("list [filter]")
-                    .description("List services")
-                    .action(function(path) {
-                        acted = true;
-                        return pio().list().then(function(list) {
-                            list.forEach(function(service) {
-                                console.log(service.alias);
-                            });
-                        }).fail(error);
-                    });
-            */
-                program
-                    .command("deploy [service alias]")
-                    .description("Deploy a service")
-                    .action(function(alias, options) {
-                        acted = true;
-                        return pio.deploy(alias, {
-                            force: program.force || false
-                        }).then(function() {
-                            return callback(null);
-                        }).fail(callback);
-                    });
+                    program
+                        .version(JSON.parse(FS.readFileSync(PATH.join(__dirname, "package.json"))).version)
+                        .option("-v, --verbose", "Show verbose progress")
+                        .option("--debug", "Show debug output")
+                        .option("-f, --force", "Force an operation when it would normally be skipped");
 
-                program
-                    .command("test <service alias>")
-                    .description("Test a service")
-                    .action(function(alias) {
-                        acted = true;
-                        return pio.test(alias).then(function() {
-                            return callback(null);
-                        }).fail(callback);
-                    });
-
-                program
-                    .command("status <service alias>")
-                    .description("Get the status of a service")
-                    .action(function(alias) {
-                        acted = true;
-                        return pio.status(alias).then(function() {
-                            return callback(null);
-                        }).fail(callback);
-                    });
-
-                program
-                    .command("clean")
-                    .description("Clean all cache information forcing a fresh fetch on next run")
-                    .action(function(alias) {
-                        acted = true;
-                        return EXEC([
-                            'rm -Rf .pio.*',
-                            'rm -Rf */.pio.*',
-                            'rm -Rf */*/.pio.*',
-                            'rm -Rf */*/*/.pio.*',
-                            'rm -Rf */*/*/*/.pio.*'
-                        ].join("; "), {
-                            cwd: PATH.dirname(pio._configPath)
-                        }, function(err, stdout, stderr) {
-                            if (err) {
-                                console.error(stdout);
-                                console.error(stderr);
-                                return callback(err);
-                            }
-                            console.log("All cache files cleaned!".green);
-                            return callback(null);
+                    var acted = false;
+                /*
+                    program
+                        .command("list [filter]")
+                        .description("List services")
+                        .action(function(path) {
+                            acted = true;
+                            return pio().list().then(function(list) {
+                                list.forEach(function(service) {
+                                    console.log(service.alias);
+                                });
+                            }).fail(error);
                         });
-                    });
+                */
+                    program
+                        .command("deploy [service alias]")
+                        .description("Deploy a service")
+                        .action(function(alias, options) {
+                            acted = true;
+                            return pio.deploy(alias, {
+                                force: program.force || false
+                            }).then(function() {
+                                return callback(null);
+                            }).fail(callback);
+                        });
 
-                program.parse(process.argv);
+                    program
+                        .command("test <service alias>")
+                        .description("Test a service")
+                        .action(function(alias) {
+                            acted = true;
+                            return pio.test(alias).then(function() {
+                                return callback(null);
+                            }).fail(callback);
+                        });
 
-                if (!acted) {
-                    var command = process.argv.slice(2).join(" ");
-                    if (command) {
-                        console.error(("ERROR: Command '" + process.argv.slice(2).join(" ") + "' not found!").error);
+                    program
+                        .command("status <service alias>")
+                        .description("Get the status of a service")
+                        .action(function(alias) {
+                            acted = true;
+                            return pio.status(alias).then(function() {
+                                return callback(null);
+                            }).fail(callback);
+                        });
+
+                    program
+                        .command("clean")
+                        .description("Clean all cache information forcing a fresh fetch on next run")
+                        .action(function(alias) {
+                            acted = true;
+                            return EXEC([
+                                'rm -Rf .pio.*',
+                                'rm -Rf */.pio.*',
+                                'rm -Rf */*/.pio.*',
+                                'rm -Rf */*/*/.pio.*',
+                                'rm -Rf */*/*/*/.pio.*'
+                            ].join("; "), {
+                                cwd: PATH.dirname(pio._configPath)
+                            }, function(err, stdout, stderr) {
+                                if (err) {
+                                    console.error(stdout);
+                                    console.error(stderr);
+                                    return callback(err);
+                                }
+                                console.log("All cache files cleaned!".green);
+                                return callback(null);
+                            });
+                        });
+
+                    program.parse(process.argv);
+
+                    if (!acted) {
+                        var command = process.argv.slice(2).join(" ");
+                        if (command) {
+                            console.error(("ERROR: Command '" + process.argv.slice(2).join(" ") + "' not found!").error);
+                        }
+                        program.outputHelp();
+                        return callback(null);
                     }
-                    program.outputHelp();
-                    return callback(null);
-                }
-            })();
+                })();
+            });
 
         }).then(function() {
             return pio.shutdown().then(function() {
