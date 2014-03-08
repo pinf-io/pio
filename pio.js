@@ -119,7 +119,7 @@ var PIO = module.exports = function(seedPath) {
         return Q.resolve();
     }
 
-    // A hash that is affected by changes in `PIO_SEED_KEY` only.
+    // A hash that is affected by changes in `PIO_SEED_SALT` and `PIO_SEED_KEY` only.
     self._seedHash = function (parts) {
         var shasum = CRYPTO.createHash("sha1");
         if (self._config.config.pio.seedId) {
@@ -129,7 +129,11 @@ var PIO = module.exports = function(seedPath) {
             ].concat(parts).join(":"));
         } else {
             var ok = true;
-            if (typeof process.env.PIO_SEED_KEY !== "string") {
+            if (!process.env.PIO_SEED_SALT) {
+                ok = false;
+                console.error(("'PIO_SEED_SALT' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (!process.env.PIO_SEED_KEY) {
                 ok = false;
                 console.error(("'PIO_SEED_KEY' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
             }
@@ -138,13 +142,39 @@ var PIO = module.exports = function(seedPath) {
             }            
             shasum.update([
                 "seed-hash",
+                process.env.PIO_SEED_SALT,
                 process.env.PIO_SEED_KEY
             ].concat(parts).join(":"));
         }
         return shasum.digest("hex");
     }
 
-    // A hash that is affected by changes in `PIO_USER_ID` only.
+    // A hash that is affected by changes in `PIO_EPOCH_ID` only.
+    self._epochHash = function (parts) {
+        var shasum = CRYPTO.createHash("sha1");
+        if (self._config.config.pio.epochId) {
+            shasum.update([
+                "user-hash",
+                self._config.config.pio.epochId
+            ].concat(parts).join(":"));
+        } else {
+            var ok = true;
+            if (!process.env.PIO_EPOCH_ID) {
+                ok = false;
+                console.error(("'PIO_EPOCH_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (!ok) {
+                throw true;
+            }            
+            shasum.update([
+                "epoch-hash",
+                process.env.PIO_EPOCH_ID
+            ].concat(parts).join(":"));
+        }
+        return shasum.digest("hex");
+    }
+
+    // A hash that is affected by changes in `PIO_EPOCH_ID` and `PIO_USER_ID` only.
     self._userHash = function (parts) {
         var shasum = CRYPTO.createHash("sha1");
         if (self._config.config.pio.userId) {
@@ -154,7 +184,11 @@ var PIO = module.exports = function(seedPath) {
             ].concat(parts).join(":"));
         } else {
             var ok = true;
-            if (typeof process.env.PIO_USER_ID !== "string") {
+            if (!process.env.PIO_EPOCH_ID) {
+                ok = false;
+                console.error(("'PIO_EPOCH_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (!process.env.PIO_USER_ID) {
                 ok = false;
                 console.error(("'PIO_USER_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
             }
@@ -163,7 +197,43 @@ var PIO = module.exports = function(seedPath) {
             }            
             shasum.update([
                 "user-hash",
+                process.env.PIO_EPOCH_ID,
                 process.env.PIO_USER_ID
+            ].concat(parts).join(":"));
+        }
+        return shasum.digest("hex");
+    }
+
+    // A hash that is affected by changes in `PIO_EPOCH_ID`, `PIO_USER_ID` and `PIO_USER_SECRET` only.
+    self._userSecretHash = function (parts) {
+        var shasum = CRYPTO.createHash("sha1");
+        if (self._config.config.pio.userSecret) {
+            shasum.update([
+                "user-secret-hash",
+                self._config.config.pio.userSecret
+            ].concat(parts).join(":"));
+        } else {
+            var ok = true;
+            if (!process.env.PIO_EPOCH_ID) {
+                ok = false;
+                console.error(("'PIO_EPOCH_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (!process.env.PIO_USER_ID) {
+                ok = false;
+                console.error(("'PIO_USER_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (!process.env.PIO_USER_SECRET) {
+                ok = false;
+                console.error(("'PIO_USER_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (!ok) {
+                throw true;
+            }            
+            shasum.update([
+                "user-secret-hash",
+                process.env.PIO_EPOCH_ID,
+                process.env.PIO_USER_ID,
+                process.env.PIO_USER_SECRET
             ].concat(parts).join(":"));
         }
         return shasum.digest("hex");
@@ -187,28 +257,32 @@ var PIO = module.exports = function(seedPath) {
     }
 
     // A hash that is affected by all properties describing the specific instance
-    // we are interacting with as well as `PIO_SEED_KEY`, `PIO_USER_ID` and `PIO_USER_SECRET`.
+    // we are interacting with as well as `PIO_SEED_SALT`, `PIO_SEED_KEY`, `PIO_USER_ID` and `PIO_USER_SECRET`.
     self._instanceHash = function (parts) {
         var shasum = CRYPTO.createHash("sha1");
-        if (self._config.config.pio.deployId) {
+        if (self._config.config.pio.instanceId) {
             shasum.update([
                 "instance-hash",
-                self._config.config.pio.deployId,
+                self._config.config.pio.instanceId,
                 self._config.config.pio.domain,
                 self._config.config.pio.namespace,
                 self._config.config.pio.ip
             ].concat(parts).join(":"));
         } else {
             var ok = true;
-            if (typeof process.env.PIO_SEED_KEY !== "string") {
+            if (!process.env.PIO_SEED_SALT) {
+                ok = false;
+                console.error(("'PIO_SEED_SALT' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
+            }
+            if (!process.env.PIO_SEED_KEY) {
                 ok = false;
                 console.error(("'PIO_SEED_KEY' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
             }
-            if (typeof process.env.PIO_USER_ID !== "string") {
+            if (!process.env.PIO_USER_ID) {
                 ok = false;
                 console.error(("'PIO_USER_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
             }
-            if (typeof process.env.PIO_USER_SECRET !== "string") {
+            if (!process.env.PIO_USER_SECRET) {
                 ok = false;
                 console.error(("'PIO_USER_SECRET' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
             }
@@ -217,6 +291,7 @@ var PIO = module.exports = function(seedPath) {
             }            
             shasum.update([
                 "instance-hash",
+                process.env.PIO_SEED_SALT,
                 process.env.PIO_SEED_KEY,
                 process.env.PIO_USER_ID,
                 process.env.PIO_USER_SECRET,
@@ -334,18 +409,22 @@ var PIO = module.exports = function(seedPath) {
                     function verify() {
                         ASSERT.equal(typeof self._config.uuid, "string", "'uuid' must be set in '" + path + "' Here is a new one if you need one: " + UUID.v4());
                         ASSERT.equal(typeof self._config.config.pio.domain, "string", "'config.pio.domain' must be set in: " + path);
+                        ASSERT.equal(/^[a-z0-9-\.]+$/.test(self._config.config.pio.domain), true, "'config.pio.domain' must only contain '[a-z0-9-\.]' in: " + path);
                         ASSERT.equal(typeof self._config.config.pio.namespace, "string", "'config.pio.namespace' must be set in: " + path);
+                        ASSERT.equal(/^[a-z0-9-]+$/.test(self._config.config.pio.namespace), true, "'config.pio.namespace' must only contain '[a-z0-9-]' in: " + path);
                         ASSERT.equal(typeof self._config.config.pio.ip, "string", "'config.pio.ip' must be set in: " + path);
+                        ASSERT.equal(typeof self._config.config.pio.keyPath, "string", "'config.pio.keyPath' must be set in '" + path + "'");
                     }
 
                     if (/\/\.pio\.json$/.test(path)) {
                         console.log("Skip loading profile as we are using a consolidated pio descriptor (" + path + ").");
                         verify();
+                        ASSERT.equal(typeof self._config.config.pio.epochId, "string", "'config.pio.epochId' must be set in: " + path);
                         ASSERT.equal(typeof self._config.config.pio.seedId, "string", "'config.pio.seedId' must be set in: " + path);
                         ASSERT.equal(typeof self._config.config.pio.dataId, "string", "'config.pio.dataId' must be set in: " + path);
                         ASSERT.equal(typeof self._config.config.pio.codebaseId, "string", "'config.pio.codebaseId' must be set in: " + path);
                         ASSERT.equal(typeof self._config.config.pio.userId, "string", "'config.pio.userId' must be set in: " + path);
-                        ASSERT.equal(typeof self._config.config.pio.deployId, "string", "'config.pio.deployId' must be set in: " + path);
+                        ASSERT.equal(typeof self._config.config.pio.instanceId, "string", "'config.pio.instanceId' must be set in: " + path);
                         ASSERT.equal(typeof self._config.config.pio.hostname, "string", "'config.pio.hostname' must be set in: " + path);
                         return;
                     }
@@ -363,111 +442,70 @@ var PIO = module.exports = function(seedPath) {
     */
                         verify();
 
-                        self._config.config.pio.seedIdSegmentPrefix = self._config.config.pio.seedIdSegmentPrefix || "s";
-                        self._config.config.pio.codebaseIdSegmentPrefix = self._config.config.pio.codebaseIdSegmentPrefix || "c";
-                        self._config.config.pio.userIdSegmentPrefix = self._config.config.pio.userIdSegmentPrefix || "u";
-                        self._config.config.pio.deployIdSegmentPrefix = self._config.config.pio.deployIdSegmentPrefix || "d";
-                        self._config.config.pio.glimpseLength = self._config.config.pio.glimpseLength || 7;
+                        var c = self._config.config.pio;
+
+                        c.idSegmentLength = c.idSegmentLength || 4;
+                        c.epochIdSegmentPrefix = c.epochIdSegmentPrefix || "e";
+                        c.seedIdSegmentPrefix = c.seedIdSegmentPrefix || "s";
+                        c.codebaseIdSegmentPrefix = c.codebaseIdSegmentPrefix || "c";
+                        c.userIdSegmentPrefix = c.userIdSegmentPrefix || "u";
+                        c.instanceIdSegmentPrefix = c.instanceIdSegmentPrefix || "i";
 
                         // WARNING: DO NOT MODIFY THIS! IF MODIFIED IT WILL BREAK COMPATIBILITY WITH ADDRESSING
                         //          EXISTING DEPLOYMENTS!
-                        self._config.config.pio.seedId = self._seedHash(["seed-id"]);
-                        var seedIdSegment =
-                            self._config.config.pio.seedIdSegmentPrefix +
-                            self._config.config.pio.seedId.substring(
-                                0,
-                                0 + self._config.config.pio.glimpseLength
-                            );
-                        self._config.config.pio.seedId = [
-                            seedIdSegment,
-                            self._config.config.pio.seedId.substring(
-                                seedIdSegment.length
-                            )
-                        ].join("-").substring(0, 40);
+
+                        c.epochId = self._epochHash(["epoch-id"]);
+                        var epochIdSegment = c.epochIdSegmentPrefix + c.epochId.substring(0, c.idSegmentLength);
+                        c.epochId = [epochIdSegment, c.namespace, c.epochId.substring(c.idSegmentLength)].join("_");
+
+                        c.seedId = self._seedHash(["seed-id", c.epochId]);
+                        var seedIdSegment = c.seedIdSegmentPrefix + c.seedId.substring(0, c.idSegmentLength);
+                        c.seedId = [epochIdSegment, c.namespace, seedIdSegment, c.seedId.substring(c.idSegmentLength)].join("_");
 
                         // Use this to derive data namespaces. They will survive multiple deployments.
-                        self._config.config.pio.dataId = [
-                            // We prefix the seedId so we can group multiple data IDs per seed ID.
-                            seedIdSegment,
-                            self._seedHash(["data-id", self._config.config.pio.seedId]).substring(
-                                seedIdSegment.length
-                            )
-                        ].join("-");
+                        c.dataId = [epochIdSegment, c.namespace, seedIdSegment, self._seedHash(["data-id", c.epochId, c.seedId])].join("_");
 
                         // Use this to derive orchestration and tooling namespaces. They are tied to the codebase uuid.
-                        self._config.config.pio.codebaseId = self._codebaseHash([
-                            "codebase-id",
-                            self._config.uuid
-                        ]);
-                        var codebaseSegment =
-                            self._config.config.pio.codebaseIdSegmentPrefix +
-                            self._config.config.pio.codebaseId.substring(
-                                seedIdSegment.length,
-                                seedIdSegment.length + self._config.config.pio.glimpseLength
-                            );
-                        self._config.config.pio.codebaseId = [
-                            // We prefix the seedIdSegment so we can group multiple codebase IDs per seed ID.
-                            seedIdSegment,
-                            codebaseSegment,
-                            self._config.config.pio.codebaseId.substring(
-                                seedIdSegment.length + codebaseSegment.length
-                            )
-                        ].join("-").substring(0, 40);
+                        c.codebaseId = self._codebaseHash(["codebase-id", c.epochId, self._config.uuid]);
+                        var codebaseSegment = c.codebaseIdSegmentPrefix + c.codebaseId.substring(0, c.idSegmentLength);
+                        c.codebaseId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, c.codebaseId.substring(c.idSegmentLength)].join("_");
 
                         // Use this to derive data namespaces for users of the codebase that can create multiple instances.
-                        self._config.config.pio.userId = self._userHash(["user-id"]);
-                        var userSegment = 
-                            self._config.config.pio.userIdSegmentPrefix +
-                            self._config.config.pio.userId.substring(
-                                seedIdSegment.length + codebaseSegment.length,
-                                seedIdSegment.length + codebaseSegment.length + self._config.config.pio.glimpseLength
-                            );
-                        self._config.config.pio.userId = [
-                            // We prefix the seedIdSegment so we can group multiple user IDs per seed ID.
-                            seedIdSegment,
-                            // We insert the codebaseSegment so we can group multiple user IDs per codebase ID.
-                            codebaseSegment,
-                            userSegment,
-                            self._config.config.pio.userId.substring(
-                                seedIdSegment.length + codebaseSegment.length
-                            )
-                        ].join("-").substring(0, 40);
+                        c.userId = self._userHash(["user-id", c.epochId]);
+                        c.userSecret = self._userSecretHash(["user-secret", c.epochId, c.userId]);
+                        var userSegment = c.userIdSegmentPrefix + c.userId.substring(0, c.idSegmentLength);
+                        c.userId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, c.userId.substring(c.idSegmentLength)].join("_");
 
                         // Use this to derive provisioning and runtime namespaces. They will change with every new IP.
-                        self._config.config.pio.deployId = self._instanceHash([
-                            "deployment-id",
-                            self._config.config.pio.dataId,
-                            self._config.config.pio.codebaseId,
-                            self._config.config.pio.userId
-                        ]);
-                        var deploySegment =
-                            self._config.config.pio.deployIdSegmentPrefix +
-                            self._config.config.pio.deployId.substring(
-                                seedIdSegment.length + codebaseSegment.length,
-                                seedIdSegment.length + codebaseSegment.length + self._config.config.pio.glimpseLength
-                        );
-                        self._config.config.pio.deployId = [
-                            // We prefix the seedIdSegment so we can group multiple deploy IDs per seed ID.
-                            seedIdSegment,
-                            // We insert the codebaseSegment so we can group multiple deploy IDs per codebase ID.
-                            codebaseSegment,
-                            deploySegment,
-                            self._config.config.pio.deployId.substring(
-                                seedIdSegment.length + codebaseSegment.length + deploySegment.length
-                            )
-                        ].join("-").substring(0, 40);
+                        c.instanceId = self._instanceHash(["deployment-id", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId]);
+                        c.instanceSecret = self._instanceHash(["instance-secret", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId, c.instanceId]);
+                        var deploySegment = c.instanceIdSegmentPrefix + c.instanceId.substring(0, c.idSegmentLength);
+                        c.instanceId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, deploySegment, c.instanceId.substring(c.idSegmentLength)].join("_");
 
+                        c.hostname = [c.namespace, "-", deploySegment, ".", c.domain].join("");
 
-                        self._config.config.pio.hostname = [
-                            self._config.config.pio.namespace,
-                            "-",
-                            deploySegment,
-                            ".",
-                            self._config.config.pio.domain
-                        ].join("");
+                        function getPublicKey() {
+                            var deferred = Q.defer();
+                            var pubKeyPath = c.keyPath + ".pub";
+                            FS.exists(pubKeyPath, function(exists) {
+                                if (exists) {
+                                    return FS.readFile(pubKeyPath, "utf8", function(err, data) {
+                                        if (err) return deferred.reject(err);
+                                        return deferred.resolve(data.match(/^(\S+\s+\S+)(\s+\S+)?\n?$/)[1]);
+                                    });
+                                }
+                                return deferred.reject(new Error("Use 'ssh-keygen -y -f PRIVATE_KEY_PATH' to get public key from private key"));
 
+                            });
+                            return deferred.promise;
+                        }
+
+                        return getPublicKey().then(function(publicKey) {
+
+                            c.keyPub = publicKey;
 // TODO: Use `dnodes://`
-                        return resolveUri("dnode://" + self._config.config.pio.ip + ":8066");
+                            return resolveUri("dnode://" + c.ip + ":8066");
+                        });
                     });
                 });
             }
