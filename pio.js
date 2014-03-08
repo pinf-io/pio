@@ -21,6 +21,7 @@ const SPAWN = require("child_process").spawn;
 const DIRSUM = require("dirsum");
 const FSWALKER = require("./lib/fswalker");
 const JSON_DIFF_PATCH = require("jsondiffpatch");
+const EXEC = require("child_process").exec;
 
 COLORS.setTheme({
     error: 'red'
@@ -419,13 +420,6 @@ PIO.prototype.list = function() {
     });
 }
 
-PIO.prototype.ensure = function(desiredConfig) {
-    var self = this;
-    return self._ready.then(function() {
-        return self._call("ensure", desiredConfig);
-    });
-}
-
 PIO.prototype._provisionPrerequisites = function(options) {
     var self = this;
     options = options || {};
@@ -516,7 +510,7 @@ PIO.prototype._normalizeServiceConfig = function(serviceAlias) {
         ASSERT.equal(typeof serviceConfig.config.pio.ip, "string");
         ASSERT.equal(typeof serviceConfig.config.pio.keyPath, "string");
         ASSERT.equal(typeof serviceConfig.config.pio.user, "string");
-        ASSERT.equal(typeof serviceConfig.config.pio.seedRepositories, "string");
+        ASSERT.equal(typeof serviceConfig.config.pio.projectsPath, "string");
         ASSERT.equal(typeof serviceConfig.config.pio.deployBasePath, "string");
 
         // Update service config to be relevant in new context.
@@ -546,9 +540,10 @@ PIO.prototype._normalizeServiceConfig = function(serviceAlias) {
         if (serviceConfig.config.pio.seedPath) {
             serviceConfig.config.pio.seedPath = PATH.join(self._configPath, "..", serviceConfig.config.pio.seedPath);
         } else {
-            serviceConfig.config.pio.seedPath = PATH.join(self._configPath, "..", serviceConfig.config.pio.seedRepositories, serviceAlias);
+            serviceConfig.config.pio.seedPath = PATH.join(self._configPath, "..", serviceConfig.config.pio.projectsPath, serviceAlias);
         }
         if (!FS.existsSync(serviceConfig.config.pio.seedPath)) throw new Error("Source path '" + serviceConfig.config.pio.seedPath + "' does not exist!");
+        delete serviceConfig.config.pio.projectsPath;
 
         if (serviceConfig.config.pio.deployPath) {
             serviceConfig.config.pio.deployPath = serviceConfig.config.pio.deployPath;
@@ -788,11 +783,7 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                                     }
 
                                     function runRemoteCommands(commands, workingDirectory) {
-                                        return self._call("_runCommands", {
-                                            commands: commands,
-                                            cwd: workingDirectory
-                                        }).then(function(code) {
-                                            if (code === 0) return;
+                                        function sshUpload() {
                                             return SSH.runRemoteCommands({
                                                 targetUser: serviceConfig.config.pio.user,
                                                 targetHostname: serviceConfig.config.pio.ip,
@@ -800,6 +791,23 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                                                 workingDirectory: workingDirectory,
                                                 keyPath: serviceConfig.config.pio.keyPath
                                             });
+                                        }
+                                        // NOTE: If deploying the `pio.deploy.server` which handles
+                                        //       the `_runCommands` call we always use SSH to run the commands.
+                                        //       If we do not do that our commands will exit early as the
+                                        //       `pio.deploy.server` restarts.
+                                        if (serviceAlias === "pio.deploy.server") {
+                                            return sshUpload();
+                                        }
+                                        return self._call("_runCommands", {
+                                            commands: commands,
+                                            cwd: workingDirectory
+                                        }).then(function(code) {
+                                            if (code !== null) {
+                                                if (code === 0) return;
+                                                throw new Error("Remote commands exited with code: " + code);
+                                            }
+                                            return sshUpload();
                                         });
                                     }
 
@@ -1024,6 +1032,30 @@ if (require.main === module) {
                         }).fail(callback);
                     });
 
+                program
+                    .command("clean")
+                    .description("Clean all cache information forcing a fresh fetch on next run")
+                    .action(function(alias) {
+                        acted = true;
+                        return EXEC([
+                            'rm -Rf .pio.*',
+                            'rm -Rf */.pio.*',
+                            'rm -Rf */*/.pio.*',
+                            'rm -Rf */*/*/.pio.*',
+                            'rm -Rf */*/*/*/.pio.*'
+                        ].join("; "), {
+                            cwd: PATH.dirname(pio._configPath)
+                        }, function(err, stdout, stderr) {
+                            if (err) {
+                                console.error(stdout);
+                                console.error(stderr);
+                                return callback(err);
+                            }
+                            console.log("All cache files cleaned!".green);
+                            return callback(null);
+                        });
+                    });
+
                 program.parse(process.argv);
 
                 if (!acted) {
@@ -1037,7 +1069,13 @@ if (require.main === module) {
             })();
 
         }).then(function() {
-            return pio.shutdown();
+            return pio.shutdown().then(function() {
+
+                // NOTE: We force an exit here as for some reason it hangs when there is no server.
+                // TODO: Try and do low-level connect to IP first.
+
+                return process.exit(0);
+            });
         }).fail(error);
     } catch(err) {
         return error(err);
