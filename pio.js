@@ -410,6 +410,7 @@ var PIO = module.exports = function(seedPath) {
 //                console.log("Using config:", path);
                 return Q.denodeify(FS.readJson)(path).then(function(config) {
                     self._configPath = path;
+                    self._rtConfigPath = path.replace(/\.json$/, ".rt.json");
                     self._config = config;
 
                     function unlock() {
@@ -468,90 +469,118 @@ var PIO = module.exports = function(seedPath) {
                             self._profilePath = path;
                             self._config = DEEPMERGE(self._config, profile);
 
-                            // TODO: Remvoe this when we use dynamic config system.
-                            var configStr = JSON.stringify(self._config.config);
-                            configStr = configStr.replace(/\{\{env\.DNSIMPLE_EMAIL\}\}/g, process.env.DNSIMPLE_EMAIL);
-                            configStr = configStr.replace(/\{\{env\.DNSIMPLE_TOKEN\}\}/g, process.env.DNSIMPLE_TOKEN);
-                            self._config.config = JSON.parse(configStr);
-
-        /*
-                            for (var key in self._config) {
-                                if (/^config\[cloud=.+\]$/.test(key)) {
-                                    delete self._config[key];
-                                }
-                            }
-        */
-                            verify();
-
-                            var c = self._config.config.pio;
-
-                            c.idSegmentLength = c.idSegmentLength || 4;
-                            c.epochIdSegmentPrefix = c.epochIdSegmentPrefix || "e";
-                            c.seedIdSegmentPrefix = c.seedIdSegmentPrefix || "s";
-                            c.codebaseIdSegmentPrefix = c.codebaseIdSegmentPrefix || "c";
-                            c.userIdSegmentPrefix = c.userIdSegmentPrefix || "u";
-                            c.instanceIdSegmentPrefix = c.instanceIdSegmentPrefix || "i";
-
-                            // WARNING: DO NOT MODIFY THIS! IF MODIFIED IT WILL BREAK COMPATIBILITY WITH ADDRESSING
-                            //          EXISTING DEPLOYMENTS!
-
-                            c.epochId = self._epochHash(["epoch-id"]);
-                            var epochIdSegment = c.epochIdSegmentPrefix + c.epochId.substring(0, c.idSegmentLength);
-                            c.epochId = [epochIdSegment, c.namespace, c.epochId.substring(c.idSegmentLength)].join("_");
-
-                            c.seedId = self._seedHash(["seed-id", c.epochId]);
-                            var seedIdSegment = c.seedIdSegmentPrefix + c.seedId.substring(0, c.idSegmentLength);
-                            c.seedId = [epochIdSegment, c.namespace, seedIdSegment, c.seedId.substring(c.idSegmentLength)].join("_");
-
-                            // Use this to derive data namespaces. They will survive multiple deployments.
-                            c.dataId = [epochIdSegment, c.namespace, seedIdSegment, self._seedHash(["data-id", c.epochId, c.seedId])].join("_");
-
-                            // Use this to derive orchestration and tooling namespaces. They are tied to the codebase uuid.
-                            c.codebaseId = self._codebaseHash(["codebase-id", c.epochId, self._config.uuid]);
-                            var codebaseSegment = c.codebaseIdSegmentPrefix + c.codebaseId.substring(0, c.idSegmentLength);
-                            c.codebaseId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, c.codebaseId.substring(c.idSegmentLength)].join("_");
-
-                            // Use this to derive data namespaces for users of the codebase that can create multiple instances.
-                            c.userId = self._userHash(["user-id", c.epochId]);
-                            c.userSecret = self._userSecretHash(["user-secret", c.epochId, c.userId]);
-                            var userSegment = c.userIdSegmentPrefix + c.userId.substring(0, c.idSegmentLength);
-                            c.userId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, c.userId.substring(c.idSegmentLength)].join("_");
-
-                            // Use this to derive provisioning and runtime namespaces. They will change with every new IP.
-                            c.instanceId = self._instanceHash(["deployment-id", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId]);
-                            c.instanceSecret = self._instanceHash(["instance-secret", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId, c.instanceId]);
-                            var deploySegment = c.instanceIdSegmentPrefix + c.instanceId.substring(0, c.idSegmentLength);
-                            c.instanceId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, deploySegment, c.instanceId.substring(c.idSegmentLength)].join("_");
-
-                            c.hostname = [c.namespace, "-", deploySegment, ".", c.domain].join("");
-
-                            function getPublicKey() {
-                                var deferred = Q.defer();
-                                var pubKeyPath = c.keyPath + ".pub";
-                                FS.exists(pubKeyPath, function(exists) {
-                                    if (exists) {
-                                        return FS.readFile(pubKeyPath, "utf8", function(err, data) {
-                                            if (err) return deferred.reject(err);
-                                            return deferred.resolve(data.match(/^(\S+\s+\S+)(\s+\S+)?\n?$/)[1]);
-                                        });
-                                    }
-                                    return deferred.reject(new Error("Use 'ssh-keygen -y -f PRIVATE_KEY_PATH' to get public key from private key"));
-
+                            function loadRuntimeConfig() {
+                                return Q.denodeify(function(callback) {
+                                    return FS.exists(self._rtConfigPath, function(exists) {
+                                        return callback(null, exists);
+                                    });
+                                })().then(function(exists) {
+                                    if (!exists) return {};
+                                    return Q.denodeify(FS.readJson)(self._rtConfigPath);
                                 });
-                                return deferred.promise;
                             }
 
-                            return getPublicKey().then(function(publicKey) {
-                                c.keyPub = publicKey;
+                            return loadRuntimeConfig().then(function (runtimeConfig) {
 
+                                if (runtimeConfig && runtimeConfig.config) {
+                                    if (runtimeConfig.config.pio) {
+                                        if (runtimeConfig.config.pio.ip) {
+                                            self._config.config.pio.ip = runtimeConfig.config.pio.ip;
+                                        }
+                                    }
+                                }
+
+                                // TODO: Remvoe this when we use dynamic config system.
                                 var configStr = JSON.stringify(self._config.config);
-                                configStr = configStr.replace(/\{\{config\.pio\.hostname\}\}/g, c.hostname);
-                                configStr = configStr.replace(/\{\{config\.pio\.domain\}\}/g, c.domain);
-                                configStr = configStr.replace(/\{\{config\.pio\.ip\}\}/g, c.ip);
+                                configStr = configStr.replace(/\{\{env\.DNSIMPLE_EMAIL\}\}/g, process.env.DNSIMPLE_EMAIL);
+                                configStr = configStr.replace(/\{\{env\.DNSIMPLE_TOKEN\}\}/g, process.env.DNSIMPLE_TOKEN);
+                                configStr = configStr.replace(/\{\{env\.AWS_ACCESS_KEY\}\}/g, process.env.AWS_ACCESS_KEY);
+                                configStr = configStr.replace(/\{\{env\.AWS_SECRET_KEY\}\}/g, process.env.AWS_SECRET_KEY);
+                                configStr = configStr.replace(/\{\{env\.DIGIO_CLIENT_ID\}\}/g, process.env.DIGIO_CLIENT_ID);
+                                configStr = configStr.replace(/\{\{env\.DIGIO_API_KEY\}\}/g, process.env.DIGIO_API_KEY);
                                 self._config.config = JSON.parse(configStr);
 
-// TODO: Use `dnodes://`
-                                return resolveUri("dnode://" + c.ip + ":8066");
+            /*
+                                for (var key in self._config) {
+                                    if (/^config\[cloud=.+\]$/.test(key)) {
+                                        delete self._config[key];
+                                    }
+                                }
+            */
+                                verify();
+
+                                var c = self._config.config.pio;
+
+                                c.idSegmentLength = c.idSegmentLength || 4;
+                                c.epochIdSegmentPrefix = c.epochIdSegmentPrefix || "e";
+                                c.seedIdSegmentPrefix = c.seedIdSegmentPrefix || "s";
+                                c.codebaseIdSegmentPrefix = c.codebaseIdSegmentPrefix || "c";
+                                c.userIdSegmentPrefix = c.userIdSegmentPrefix || "u";
+                                c.instanceIdSegmentPrefix = c.instanceIdSegmentPrefix || "i";
+
+                                // WARNING: DO NOT MODIFY THIS! IF MODIFIED IT WILL BREAK COMPATIBILITY WITH ADDRESSING
+                                //          EXISTING DEPLOYMENTS!
+
+                                c.epochId = self._epochHash(["epoch-id"]);
+                                var epochIdSegment = c.epochIdSegmentPrefix + c.epochId.substring(0, c.idSegmentLength);
+                                c.epochId = [epochIdSegment, c.namespace, c.epochId.substring(c.idSegmentLength)].join("_");
+
+                                c.seedId = self._seedHash(["seed-id", c.epochId]);
+                                var seedIdSegment = c.seedIdSegmentPrefix + c.seedId.substring(0, c.idSegmentLength);
+                                c.seedId = [epochIdSegment, c.namespace, seedIdSegment, c.seedId.substring(c.idSegmentLength)].join("_");
+
+                                // Use this to derive data namespaces. They will survive multiple deployments.
+                                c.dataId = [epochIdSegment, c.namespace, seedIdSegment, self._seedHash(["data-id", c.epochId, c.seedId])].join("_");
+
+                                // Use this to derive orchestration and tooling namespaces. They are tied to the codebase uuid.
+                                c.codebaseId = self._codebaseHash(["codebase-id", c.epochId, self._config.uuid]);
+                                var codebaseSegment = c.codebaseIdSegmentPrefix + c.codebaseId.substring(0, c.idSegmentLength);
+                                c.codebaseId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, c.codebaseId.substring(c.idSegmentLength)].join("_");
+
+                                // Use this to derive data namespaces for users of the codebase that can create multiple instances.
+                                c.userId = self._userHash(["user-id", c.epochId]);
+                                c.userSecret = self._userSecretHash(["user-secret", c.epochId, c.userId]);
+                                var userSegment = c.userIdSegmentPrefix + c.userId.substring(0, c.idSegmentLength);
+                                c.userId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, c.userId.substring(c.idSegmentLength)].join("_");
+
+                                // Use this to derive provisioning and runtime namespaces. They will change with every new IP.
+                                c.instanceId = self._instanceHash(["deployment-id", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId]);
+                                c.instanceSecret = self._instanceHash(["instance-secret", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId, c.instanceId]);
+                                var deploySegment = c.instanceIdSegmentPrefix + c.instanceId.substring(0, c.idSegmentLength);
+                                c.instanceId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, deploySegment, c.instanceId.substring(c.idSegmentLength)].join("_");
+
+                                c.hostname = [c.namespace, "-", deploySegment, ".", c.domain].join("");
+
+                                function getPublicKey() {
+                                    var deferred = Q.defer();
+                                    var pubKeyPath = c.keyPath + ".pub";
+                                    FS.exists(pubKeyPath, function(exists) {
+                                        if (exists) {
+                                            return FS.readFile(pubKeyPath, "utf8", function(err, data) {
+                                                if (err) return deferred.reject(err);
+                                                return deferred.resolve(data.match(/^(\S+\s+\S+)(\s+\S+)?\n?$/)[1]);
+                                            });
+                                        }
+                                        return deferred.reject(new Error("Use 'ssh-keygen -y -f PRIVATE_KEY_PATH' to get public key from private key"));
+
+                                    });
+                                    return deferred.promise;
+                                }
+
+                                return getPublicKey().then(function(publicKey) {
+                                    c.keyPub = publicKey;
+
+                                    var configStr = JSON.stringify(self._config.config);
+                                    configStr = configStr.replace(/\{\{config\.pio\.hostname\}\}/g, c.hostname);
+                                    configStr = configStr.replace(/\{\{config\.pio\.domain\}\}/g, c.domain);
+                                    configStr = configStr.replace(/\{\{config\.pio\.ip\}\}/g, c.ip);
+                                    configStr = configStr.replace(/\{\{config\.pio\.keyPub\}\}/g, c.keyPub);
+                                    configStr = configStr.replace(/\{\{env.USER\}\}/g, process.env.USER);
+                                    self._config.config = JSON.parse(configStr);
+
+    // TODO: Use `dnodes://`
+                                    return resolveUri("dnode://" + c.ip + ":8066");
+                                });
                             });
                         });
                     });
@@ -593,8 +622,11 @@ PIO.prototype.getConfig = function(selector) {
     throw new Error("NYI");
 }
 
-PIO.prototype.updateConfig = function(selector, value) {
+PIO.prototype._setRuntimeConfig = function(config) {
     var self = this;
+    return Q.denodeify(FS.outputFile)(self._rtConfigPath, JSON.stringify(config, null, 4));
+
+/*    
     if (selector === "config.pio.ip") {
         return Q.denodeify(FS.readJson)(self._configPath).then(function(config) {
             config.config.pio.ip = value;
@@ -603,7 +635,7 @@ PIO.prototype.updateConfig = function(selector, value) {
             return self._ready = self._load();
         });
     }
-    throw new Error("NYI");
+*/
 }
 
 PIO.prototype.ensure = function() {
@@ -1310,6 +1342,15 @@ if (require.main === module) {
                             return pio.status(alias).then(function() {
                                 return callback(null);
                             }).fail(callback);
+                        });
+
+                    program
+                        .command("info")
+                        .description("Overall stack config info")
+                        .action(function() {
+                            acted = true;
+                            console.log(JSON.stringify(pio._config.config, null, 4));
+                            return callback(null);
                         });
 
                     program
