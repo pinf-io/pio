@@ -550,17 +550,10 @@ PIO.prototype.ensure = function(serviceAlias, options) {
             force: options.force || false,
             status: "ready"
         },
-        "pio": {
-            hostname: self._config.config["pio"].hostname,
-            keyPath: self._config.config["pio"].keyPath,
-            servicesPath: self._config.config["pio"].servicesPath,
+        "pio": DEEPMERGE(DEEPCOPY(self._config.config["pio"]), {
             status: "ready"
-        },
-        "pio.vm": {
-            ip: self._config.config["pio.vm"].ip,
-            user: self._config.config["pio.vm"].user,
-            prefixPath: self._config.config["pio.vm"].prefixPath
-        }
+        }),
+        "pio.vm": DEEPCOPY(self._config.config["pio.vm"])
     }).then(function(state) {
 
         // We can proceed if everything is ready or we are not waiting
