@@ -20,7 +20,6 @@ const SSH = require("./lib/ssh");
 const SPAWN = require("child_process").spawn;
 const DIRSUM = require("dirsum");
 const FSWALKER = require("./lib/fswalker");
-const JSON_DIFF_PATCH = require("jsondiffpatch");
 const EXEC = require("child_process").exec;
 const NET = require("net");
 
@@ -34,6 +33,7 @@ var PIO = module.exports = function(seedPath) {
 
     self.API = {
         Q: Q,
+        FS: FS,
         DEEPCOPY: DEEPCOPY,
         DEEPMERGE: DEEPMERGE,
         SSH: SSH,
@@ -526,7 +526,7 @@ function callPlugins(pio, method, state) {
     });
 }
 
-PIO.prototype.ensure = function() {
+PIO.prototype.ensure = function(serviceAlias, options) {
     var self = this;
     if (self._state) {
         return Q.resolve(self._state);
@@ -541,9 +541,14 @@ PIO.prototype.ensure = function() {
     ) {
         return Q.resolve(null);
     }
+    options = options || {
+        force: (self._state && self._state["pio.cli.local"] && self._state["pio.cli.local"].force) || false
+    }
     return callPlugins(self, "ensure", {
         "pio.cli.local": {
-            status: "ready"            
+            serviceAlias: serviceAlias || null,
+            force: options.force || false,
+            status: "ready"
         },
         "pio": {
             hostname: self._config.config["pio"].hostname,
@@ -577,13 +582,6 @@ PIO.prototype.ensure = function() {
     });
 }
 
-PIO.prototype.status = function() {
-    var self = this;
-    return self._ready.then(function() {
-        return self._state["pio.deploy"]._call("status", {});
-    });
-}
-
 PIO.prototype.list = function() {
     var self = this;
     return self._ready.then(function() {
@@ -598,8 +596,10 @@ PIO.prototype.list = function() {
     });
 }
 
-PIO.prototype.deploy = function(serviceAlias, options) {
+PIO.prototype.deploy = function() {
     var self = this;
+
+    var serviceAlias = self._state["pio.cli.local"].serviceAlias;
 
     if (!serviceAlias) {
         // Deploy all services.
@@ -613,12 +613,14 @@ PIO.prototype.deploy = function(serviceAlias, options) {
             var done = Q.resolve();
             self._config.boot.forEach(function(serviceAlias) {
                 done = Q.when(done, function() {
-                    return self.deploy(serviceAlias, options).then(function() {
-                        return self._state["pio.deploy"]._ensure().then(function(_response) {
-                            if (_response.status === "ready") {
-                                console.log("Switching to using dnode transport where possible!".green);
-                            }
-                            return;
+                    return self.ensure(serviceAlias).then(function() {
+                        return self.deploy(serviceAlias).then(function() {
+                            return self._state["pio.deploy"]._ensure().then(function(_response) {
+                                if (_response.status === "ready") {
+                                    console.log("Switching to using dnode transport where possible!".green);
+                                }
+                                return;
+                            });
                         });
                     });
                 });
@@ -634,7 +636,7 @@ PIO.prototype.deploy = function(serviceAlias, options) {
                         return;
                     }
                     done = Q.when(done, function() {
-                        return self.deploy(serviceAlias, options);
+                        return self.deploy(serviceAlias);
                     });
                 });
                 return done;
@@ -642,16 +644,14 @@ PIO.prototype.deploy = function(serviceAlias, options) {
         });
     }
 
+    if (!self._config.provides[serviceAlias]) {
+        return Q.reject("Service '" + serviceAlias + "' not found!");
+    }
+
     if (self._config.provides[serviceAlias].enabled === false) {
         console.log(("Skip deploy service '" + serviceAlias + "'. It is disabled!").yellow);
         return;
     }
-
-    self._state["pio.cli.local"].force = options.force || false;
-
-    self._state["pio.service"] = {
-        alias: serviceAlias
-    };
 
     console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._config.config.pio.keyPath + " " + self._config.config["pio.vm"].user + "@" + self._config.config["pio.vm"].ip).bold);
 
@@ -662,42 +662,67 @@ PIO.prototype.deploy = function(serviceAlias, options) {
     });
 }
 
-PIO.prototype.test = function(serviceAlias) {
+PIO.prototype.test = function() {
     var self = this;
-    return self._normalizeServiceConfig(serviceAlias).then(function(serviceConfig) {
 
-        console.log(("Calling 'test.sh' at: " + serviceConfig.config.pio.seedPath).magenta);
+    var serviceAlias = self._state["pio.cli.local"].serviceAlias;
 
-        return Q.denodeify(function(callback) {
-            var proc = SPAWN("sh", [
-                "test.sh"
-            ], {
-                cwd: serviceConfig.config.pio.seedPath,
-                env: {
-                    PATH: process.env.PATH,
-                    PIO_PUBLIC_IP: serviceConfig.config["pio.vm"].ip,
-                    PORT: serviceConfig.env.PORT
-                }
-            });
-            proc.stdout.on('data', function (data) {
-                process.stdout.write(data);
-            });
-            proc.stderr.on('data', function (data) {
-                process.stderr.write(data);
-            });
-            proc.on('close', function (code) {
-                if (code !== 0) {
-                    console.error("ERROR: Script exited with code '" + code + "'");
-                    return callback(new Error("Script exited with code '" + code + "'"));
-                }
-                return callback(null);
-            });
-        })();
+    console.log(("Calling 'test.sh' at: " + serviceConfig.config.pio.seedPath).magenta);
+
+    return Q.denodeify(function(callback) {
+        var proc = SPAWN("sh", [
+            "test.sh"
+        ], {
+            cwd: serviceConfig.config.pio.seedPath,
+            env: {
+                PATH: process.env.PATH,
+                PIO_PUBLIC_IP: serviceConfig.config["pio.vm"].ip,
+                PORT: serviceConfig.env.PORT
+            }
+        });
+        proc.stdout.on('data', function (data) {
+            process.stdout.write(data);
+        });
+        proc.stderr.on('data', function (data) {
+            process.stderr.write(data);
+        });
+        proc.on('close', function (code) {
+            if (code !== 0) {
+                console.error("ERROR: Script exited with code '" + code + "'");
+                return callback(new Error("Script exited with code '" + code + "'"));
+            }
+            return callback(null);
+        });
+    })();
+}
+
+
+PIO.prototype.info = function() {
+    var self = this;
+
+    var serviceAlias = self._state["pio.cli.local"].serviceAlias;
+
+    if (!serviceAlias) {
+        console.log(JSON.stringify(self._config.config, null, 4));
+        return Q.resolve();
+    }
+
+    return self._state["pio.deploy"]._call("info", {
+        servicePath: self._state["pio.service.deployment"].path
+    }).then(function(res) {
+
+console.log("res", res);
+
     });
 }
 
-PIO.prototype.status = function(serviceAlias) {
+PIO.prototype.status = function() {
     var self = this;
+
+    var serviceAlias = self._state["pio.cli.local"].serviceAlias;
+
+    // TODO: Run local and remote status.
+
     return self._normalizeServiceConfig(serviceAlias).then(function(serviceConfig) {
 
         console.log(("Calling 'status.sh' at: " + serviceConfig.config.pio.seedPath).magenta);
@@ -752,113 +777,123 @@ if (require.main === module) {
 
         var pio = new PIO(process.cwd());
 
-        return pio.ready().then(function() {
-
-            return pio.ensure().then(function() {
-
-                return Q.denodeify(function(callback) {
-
-                    var program = new COMMANDER.Command();
-
-                    program
-                        .version(JSON.parse(FS.readFileSync(PATH.join(__dirname, "package.json"))).version)
-                        .option("-v, --verbose", "Show verbose progress")
-                        .option("--debug", "Show debug output")
-                        .option("-f, --force", "Force an operation when it would normally be skipped");
-
-                    var acted = false;
-                /*
-                    program
-                        .command("list [filter]")
-                        .description("List services")
-                        .action(function(path) {
-                            acted = true;
-                            return pio().list().then(function(list) {
-                                list.forEach(function(service) {
-                                    console.log(service.alias);
-                                });
-                            }).fail(error);
-                        });
-                */
-                    program
-                        .command("deploy [service alias]")
-                        .description("Deploy a service")
-                        .action(function(alias, options) {
-                            acted = true;
-                            return pio.deploy(alias, {
-                                force: program.force || false
-                            }).then(function() {
-                                return callback(null);
-                            }).fail(callback);
-                        });
-
-                    program
-                        .command("test <service alias>")
-                        .description("Test a service")
-                        .action(function(alias) {
-                            acted = true;
-                            return pio.test(alias).then(function() {
-                                return callback(null);
-                            }).fail(callback);
-                        });
-
-                    program
-                        .command("status <service alias>")
-                        .description("Get the status of a service")
-                        .action(function(alias) {
-                            acted = true;
-                            return pio.status(alias).then(function() {
-                                return callback(null);
-                            }).fail(callback);
-                        });
-
-                    program
-                        .command("info")
-                        .description("Overall stack config info")
-                        .action(function() {
-                            acted = true;
-                            console.log(JSON.stringify(pio._config.config, null, 4));
-                            return callback(null);
-                        });
-
-                    program
-                        .command("clean")
-                        .description("Clean all cache information forcing a fresh fetch on next run")
-                        .action(function(alias) {
-                            acted = true;
-                            return EXEC([
-                                'rm -Rf .pio.*',
-                                'rm -Rf */.pio.*',
-                                'rm -Rf */*/.pio.*',
-                                'rm -Rf */*/*/.pio.*',
-                                'rm -Rf */*/*/*/.pio.*'
-                            ].join("; "), {
-                                cwd: PATH.dirname(pio._configPath)
-                            }, function(err, stdout, stderr) {
-                                if (err) {
-                                    console.error(stdout);
-                                    console.error(stderr);
-                                    return callback(err);
-                                }
-                                console.log("All cache files cleaned!".green);
-                                return callback(null);
-                            });
-                        });
-
-                    program.parse(process.argv);
-
-                    if (!acted) {
-                        var command = process.argv.slice(2).join(" ");
-                        if (command) {
-                            console.error(("ERROR: Command '" + process.argv.slice(2).join(" ") + "' not found!").error);
-                        }
-                        program.outputHelp();
-                        return callback(null);
-                    }
-                })();
+        function ensure(program, serviceAlias, options) {
+            options = options || {};
+            if (program.force) {
+                options.force = program.force;
+            }
+            return pio.ready().then(function() {
+                return pio.ensure(serviceAlias, options);
             });
+        }
 
-        }).then(function() {
+        return Q.denodeify(function(callback) {
+
+            var program = new COMMANDER.Command();
+
+            program
+                .version(JSON.parse(FS.readFileSync(PATH.join(__dirname, "package.json"))).version)
+                .option("-v, --verbose", "Show verbose progress")
+                .option("--debug", "Show debug output")
+                .option("-f, --force", "Force an operation when it would normally be skipped");
+
+            var acted = false;
+        /*
+            program
+                .command("list [filter]")
+                .description("List services")
+                .action(function(path) {
+                    acted = true;
+                    return pio().list().then(function(list) {
+                        list.forEach(function(service) {
+                            console.log(service.alias);
+                        });
+                    }).fail(error);
+                });
+        */
+            program
+                .command("deploy [service alias]")
+                .description("Deploy a service")
+                .action(function(alias) {
+                    acted = true;
+                    return ensure(program, alias).then(function() {
+                        return pio.deploy();
+                    }).then(function() {
+                        return callback(null);
+                    }).fail(callback);
+                });
+
+            program
+                .command("test <service alias>")
+                .description("Test a service")
+                .action(function(alias) {
+                    acted = true;
+                    return ensure(program, alias).then(function() {
+                        return pio.test();
+                    }).then(function() {
+                        return callback(null);
+                    }).fail(callback);
+                });
+
+            program
+                .command("status <service alias>")
+                .description("Get the status of a service")
+                .action(function(alias) {
+                    acted = true;
+                    return ensure(program, alias).then(function() {
+                        return pio.status();
+                    }).then(function() {
+                        return callback(null);
+                    }).fail(callback);
+                });
+
+            program
+                .command("info [service alias]")
+                .description("Config and runtime info")
+                .action(function(alias) {
+                    acted = true;
+                    return ensure(program, alias).then(function() {
+                        return pio.info();
+                    }).then(function() {
+                        return callback(null);
+                    }).fail(callback);
+                });
+
+            program
+                .command("clean")
+                .description("Clean all cache information forcing a fresh fetch on next run")
+                .action(function(alias) {
+                    acted = true;
+                    return EXEC([
+                        'rm -Rf .pio.*',
+                        'rm -Rf */.pio.*',
+                        'rm -Rf */*/.pio.*',
+                        'rm -Rf */*/*/.pio.*',
+                        'rm -Rf */*/*/*/.pio.*'
+                    ].join("; "), {
+                        cwd: PATH.dirname(pio._configPath)
+                    }, function(err, stdout, stderr) {
+                        if (err) {
+                            console.error(stdout);
+                            console.error(stderr);
+                            return callback(err);
+                        }
+                        console.log("All cache files cleaned!".green);
+                        return callback(null);
+                    });
+                });
+
+            program.parse(process.argv);
+
+            if (!acted) {
+                var command = process.argv.slice(2).join(" ");
+                if (command) {
+                    console.error(("ERROR: Command '" + process.argv.slice(2).join(" ") + "' not found!").error);
+                }
+                program.outputHelp();
+                return callback(null);
+            }
+        })().then(function() {
             return pio.shutdown().then(function() {
 
                 // NOTE: We force an exit here as for some reason it hangs when there is no server.

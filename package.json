@@ -19,8 +19,7 @@
     "escape-regexp-component": "~1.0.2",
     "deepcopy": "~0.3.3",
     "dirsum": "~0.1.1",
-    "deepmerge": "~0.2.7",
-    "jsondiffpatch": "~0.1.4"
+    "deepmerge": "~0.2.7"
   },
   "devDependencies": {
     "mocha": "~1.17.1"
