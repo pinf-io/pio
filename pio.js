@@ -7,10 +7,7 @@ const EVENTS = require("events");
 const FS = require("fs-extra");
 const Q = require("q");
 const URL = require("url");
-const COMMANDER = require("commander");
-const COLORS = require("colors");
 const UUID = require("uuid");
-const DNODE = require("dnode");
 const DEEPCOPY = require("deepcopy");
 const DEEPMERGE = require("deepmerge");
 const CRYPTO = require("crypto");
@@ -22,10 +19,7 @@ const DIRSUM = require("dirsum");
 const FSWALKER = require("./lib/fswalker");
 const EXEC = require("child_process").exec;
 const NET = require("net");
-
-COLORS.setTheme({
-    error: 'red'
-});
+const WAITFOR = require("waitfor");
 
 
 var PIO = module.exports = function(seedPath) {
@@ -38,7 +32,8 @@ var PIO = module.exports = function(seedPath) {
         DEEPMERGE: DEEPMERGE,
         SSH: SSH,
         RSYNC: RSYNC,
-        FSWALKER: FSWALKER
+        FSWALKER: FSWALKER,
+        WAITFOR: WAITFOR
     };
 
     // A hash that is affected by changes in `PIO_SEED_SALT` and `PIO_SEED_KEY` only.
@@ -526,9 +521,9 @@ function callPlugins(pio, method, state) {
     });
 }
 
-PIO.prototype.ensure = function(serviceAlias, options) {
+PIO.prototype.ensure = function(serviceSelector, options) {
     var self = this;
-    if (self._state && self._state["pio.cli.local"].serviceAlias === serviceAlias) {
+    if (self._state && self._state["pio.cli.local"].serviceSelector === serviceSelector) {
         return Q.resolve(self._state);
     }
     if (
@@ -546,7 +541,7 @@ PIO.prototype.ensure = function(serviceAlias, options) {
     }
     return callPlugins(self, "ensure", {
         "pio.cli.local": {
-            serviceAlias: serviceAlias || null,
+            serviceSelector: serviceSelector || null,
             force: options.force || false,
             status: "ready"
         },
@@ -579,10 +574,13 @@ PIO.prototype.list = function() {
     var self = this;
     return self._ready.then(function() {
         var services = [];
-        for (var serviceAlias in self._config.provides) {
-            services.push({
-                alias: serviceAlias
-            });
+        for (var serviceGroup in self._config.services) {
+            for (var serviceAlias in self._config.services[serviceGroup]) {
+                services.push({
+                    group: serviceGroup,
+                    alias: serviceAlias
+                });
+            }
         }
         return services;
 //        return self._call("list", {});
@@ -592,14 +590,10 @@ PIO.prototype.list = function() {
 PIO.prototype.deploy = function() {
     var self = this;
 
-    var serviceAlias = self._state["pio.cli.local"].serviceAlias;
-
-    if (!serviceAlias) {
+    if (!self._state["pio.cli.local"].serviceSelector) {
         // Deploy all services.
 
         return self._ready.then(function() {
-
-            var services = Object.keys(self._config.provides);
 
             console.log("Deploying services sequentially according to 'boot' order:".cyan);
 
@@ -624,27 +618,36 @@ PIO.prototype.deploy = function() {
                 console.log("Deploying remaining services sequentially:".cyan);
 
                 var done = Q.resolve();
-                Object.keys(self._config.provides).forEach(function(serviceAlias) {
-                    if (self._config.config["pio.vm"].provision.indexOf(serviceAlias) !== -1) {
-                        return;
-                    }
-                    done = Q.when(done, function() {
-                        return self.ensure(serviceAlias).then(function() {
-                            return self.deploy();
+                for (var serviceGroup in self._config.services) {
+                    Object.keys(self._config.services[serviceGroup]).forEach(function(serviceAlias) {
+                        if (self._config.config["pio.vm"].provision.indexOf(serviceAlias) !== -1) {
+                            return;
+                        }
+                        done = Q.when(done, function() {
+                            return self.ensure(serviceAlias).then(function() {
+                                return self.deploy();
+                            });
                         });
                     });
-                });
+                }
                 return done;
             });
         });
     }
 
-    if (!self._config.provides[serviceAlias]) {
-        return Q.reject("Service '" + serviceAlias + "' not found!");
+    var serviceAlias = self._state["pio.service"].alias;
+    var serviceGroup = self._state["pio.service"].group;
+
+    if (!self._config.services[serviceGroup]) {
+        return Q.reject("Service group '" + serviceGroup + "' not found!");
     }
 
-    if (self._config.provides[serviceAlias].enabled === false) {
-        console.log(("Skip deploy service '" + serviceAlias + "'. It is disabled!").yellow);
+    if (!self._config.services[serviceGroup][serviceAlias]) {
+        return Q.reject("Service '" + serviceAlias + "' not found in group '" + serviceGroup + "'!");
+    }
+
+    if (self._config.services[serviceGroup][serviceAlias].enabled === false) {
+        console.log(("Skip deploy service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
         return;
     }
 
@@ -659,7 +662,7 @@ PIO.prototype.deploy = function() {
 
 PIO.prototype.test = function() {
     var self = this;
-
+throw new Error("NYI");
     var serviceAlias = self._state["pio.cli.local"].serviceAlias;
 
     console.log(("Calling 'test.sh' at: " + serviceConfig.config.pio.seedPath).magenta);
@@ -695,9 +698,9 @@ PIO.prototype.test = function() {
 PIO.prototype.info = function() {
     var self = this;
 
-    var serviceAlias = self._state["pio.cli.local"].serviceAlias;
+    var serviceAlias = self._state["pio.cli.local"].serviceSelector;
 
-    if (!serviceAlias) {
+    if (!self._state["pio.cli.local"].serviceSelector) {
         console.log(JSON.stringify(self._config.config, null, 4));
         return Q.resolve();
     }
@@ -713,6 +716,7 @@ console.log("res", res);
 
 PIO.prototype.status = function() {
     var self = this;
+throw new Error("NYI");
 
     var serviceAlias = self._state["pio.cli.local"].serviceAlias;
 
@@ -750,154 +754,3 @@ PIO.prototype.status = function() {
     });
 }
 
-module.exports.API = {
-    RSYNC: RSYNC,
-    SSH: SSH
-};
-
-
-if (require.main === module) {
-
-    function error(err) {
-        if (typeof err === "string") {
-            console.error((""+err).red);
-        } else
-        if (typeof err === "object" && err.stack) {
-            console.error((""+err.stack).red);
-        }
-        process.exit(1);
-    }
-
-    try {
-
-        var pio = new PIO(process.cwd());
-
-        function ensure(program, serviceAlias, options) {
-            options = options || {};
-            if (program.force) {
-                options.force = program.force;
-            }
-            return pio.ready().then(function() {
-                return pio.ensure(serviceAlias, options);
-            });
-        }
-
-        return Q.denodeify(function(callback) {
-
-            var program = new COMMANDER.Command();
-
-            program
-                .version(JSON.parse(FS.readFileSync(PATH.join(__dirname, "package.json"))).version)
-                .option("-v, --verbose", "Show verbose progress")
-                .option("--debug", "Show debug output")
-                .option("-f, --force", "Force an operation when it would normally be skipped");
-
-            var acted = false;
-        /*
-            program
-                .command("list [filter]")
-                .description("List services")
-                .action(function(path) {
-                    acted = true;
-                    return pio().list().then(function(list) {
-                        list.forEach(function(service) {
-                            console.log(service.alias);
-                        });
-                    }).fail(error);
-                });
-        */
-            program
-                .command("deploy [service alias]")
-                .description("Deploy a service")
-                .action(function(alias) {
-                    acted = true;
-                    return ensure(program, alias).then(function() {
-                        return pio.deploy();
-                    }).then(function() {
-                        return callback(null);
-                    }).fail(callback);
-                });
-
-            program
-                .command("test <service alias>")
-                .description("Test a service")
-                .action(function(alias) {
-                    acted = true;
-                    return ensure(program, alias).then(function() {
-                        return pio.test();
-                    }).then(function() {
-                        return callback(null);
-                    }).fail(callback);
-                });
-
-            program
-                .command("status <service alias>")
-                .description("Get the status of a service")
-                .action(function(alias) {
-                    acted = true;
-                    return ensure(program, alias).then(function() {
-                        return pio.status();
-                    }).then(function() {
-                        return callback(null);
-                    }).fail(callback);
-                });
-
-            program
-                .command("info [service alias]")
-                .description("Config and runtime info")
-                .action(function(alias) {
-                    acted = true;
-                    return ensure(program, alias).then(function() {
-                        return pio.info();
-                    }).then(function() {
-                        return callback(null);
-                    }).fail(callback);
-                });
-
-            program
-                .command("clean")
-                .description("Clean all cache information forcing a fresh fetch on next run")
-                .action(function(alias) {
-                    acted = true;
-                    return EXEC([
-                        'rm -Rf .pio.*',
-                        'rm -Rf */.pio.*',
-                        'rm -Rf */*/.pio.*',
-                        'rm -Rf */*/*/.pio.*',
-                        'rm -Rf */*/*/*/.pio.*'
-                    ].join("; "), {
-                        cwd: PATH.dirname(pio._configPath)
-                    }, function(err, stdout, stderr) {
-                        if (err) {
-                            console.error(stdout);
-                            console.error(stderr);
-                            return callback(err);
-                        }
-                        console.log("All cache files cleaned!".green);
-                        return callback(null);
-                    });
-                });
-
-            program.parse(process.argv);
-
-            if (!acted) {
-                var command = process.argv.slice(2).join(" ");
-                if (command) {
-                    console.error(("ERROR: Command '" + process.argv.slice(2).join(" ") + "' not found!").error);
-                }
-                program.outputHelp();
-                return callback(null);
-            }
-        })().then(function() {
-            return pio.shutdown().then(function() {
-
-                // NOTE: We force an exit here as for some reason it hangs when there is no server.
-                // TODO: Try and do low-level connect to IP first.
-
-                return process.exit(0);
-            });
-        }).fail(error);
-    } catch(err) {
-        return error(err);
-    }
-}

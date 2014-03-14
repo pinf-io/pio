@@ -1,15 +1,8 @@
 {
   "name": "pio",
   "version": "0.1.0",
-  "description": "CLI client for PINF.io service",
   "main": "pio.js",
-  "bin": {
-    "pio": "pio.sh"
-  },
   "dependencies": {
-    "commander": "~2.1.0",
-    "colors": "~0.6.2",
-    "dnode": "~1.2.0",
     "require.async": "~0.1.1",
     "q": "~1.0.0",
     "request": "~2.33.0",
@@ -19,12 +12,7 @@
     "escape-regexp-component": "~1.0.2",
     "deepcopy": "~0.3.3",
     "dirsum": "~0.1.1",
-    "deepmerge": "~0.2.7"
-  },
-  "devDependencies": {
-    "mocha": "~1.17.1"
-  },
-  "scripts": {
-    "test": "node_modules/.bin/mocha --reporter list pio.test.js"
+    "deepmerge": "~0.2.7",
+    "waitfor": "~0.1.3"
   }
 }
