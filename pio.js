@@ -282,6 +282,7 @@ var PIO = module.exports = function(seedPath) {
                             ASSERT.equal(typeof self._config.config.pio.namespace, "string", "'config.pio.namespace' must be set in: " + self._configPath);
                             ASSERT.equal(/^[a-z0-9-]+$/.test(self._config.config.pio.namespace), true, "'config.pio.namespace' must only contain '[a-z0-9-]' in: " + self._configPath);
                             ASSERT.equal(typeof self._config.config["pio.vm"].ip, "string", "'config[pio.vm].ip' must be set in: " + self._configPath);
+                            ASSERT.equal(typeof self._config.config["pio.vm"].prefixPath, "string", "'config[pio.vm].prefixPath' must be set in: " + self._configPath);
                             ASSERT.equal(typeof self._config.config.pio.keyPath, "string", "'config.pio.keyPath' must be set in '" + self._configPath + "'");
                         }
 
@@ -342,6 +343,13 @@ var PIO = module.exports = function(seedPath) {
                                 }
             */
                                 verify();
+
+
+                                self._config.env.PATH = [
+                                    self._config.config["pio.vm"].prefixPath + "/bin",
+                                    self._config.env.PATH
+                                ].filter(function(path) { return !!path; }).join(":");
+
 
                                 var c = self._config.config.pio;
 
@@ -638,15 +646,11 @@ PIO.prototype.deploy = function() {
     var serviceAlias = self._state["pio.service"].alias;
     var serviceGroup = self._state["pio.service"].group;
 
-    if (!self._config.services[serviceGroup]) {
-        return Q.reject("Service group '" + serviceGroup + "' not found!");
-    }
-
-    if (!self._config.services[serviceGroup][serviceAlias]) {
-        return Q.reject("Service '" + serviceAlias + "' not found in group '" + serviceGroup + "'!");
-    }
-
-    if (self._config.services[serviceGroup][serviceAlias].enabled === false) {
+    if (
+        self._config.services[serviceGroup] &&
+        self._config.services[serviceGroup][serviceAlias] &&
+        self._config.services[serviceGroup][serviceAlias].enabled === false
+    ) {
         console.log(("Skip deploy service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
         return;
     }
