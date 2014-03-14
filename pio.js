@@ -528,7 +528,7 @@ function callPlugins(pio, method, state) {
 
 PIO.prototype.ensure = function(serviceAlias, options) {
     var self = this;
-    if (self._state) {
+    if (self._state && self._state["pio.cli.local"].serviceAlias === serviceAlias) {
         return Q.resolve(self._state);
     }
     if (
@@ -604,10 +604,10 @@ PIO.prototype.deploy = function() {
             console.log("Deploying services sequentially according to 'boot' order:".cyan);
 
             var done = Q.resolve();
-            self._config.boot.forEach(function(serviceAlias) {
+            self._config.config["pio.vm"].provision.forEach(function(serviceAlias) {
                 done = Q.when(done, function() {
                     return self.ensure(serviceAlias).then(function() {
-                        return self.deploy(serviceAlias).then(function() {
+                        return self.deploy().then(function() {
                             return self._state["pio.deploy"]._ensure().then(function(_response) {
                                 if (_response.status === "ready") {
                                     console.log("Switching to using dnode transport where possible!".green);
@@ -625,11 +625,13 @@ PIO.prototype.deploy = function() {
 
                 var done = Q.resolve();
                 Object.keys(self._config.provides).forEach(function(serviceAlias) {
-                    if (self._config.boot.indexOf(serviceAlias) !== -1) {
+                    if (self._config.config["pio.vm"].provision.indexOf(serviceAlias) !== -1) {
                         return;
                     }
                     done = Q.when(done, function() {
-                        return self.deploy(serviceAlias);
+                        return self.ensure(serviceAlias).then(function() {
+                            return self.deploy();
+                        });
                     });
                 });
                 return done;
