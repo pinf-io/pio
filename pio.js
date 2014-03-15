@@ -550,12 +550,9 @@ PIO.prototype.ensure = function(serviceSelector, options) {
     return callPlugins(self, "ensure", {
         "pio.cli.local": {
             serviceSelector: serviceSelector || null,
-            force: options.force || false,
-            status: "ready"
+            force: options.force || false
         },
-        "pio": DEEPMERGE(DEEPCOPY(self._config.config["pio"]), {
-            status: "ready"
-        }),
+        "pio": DEEPMERGE(DEEPCOPY(self._config.config["pio"]), {}),
         "pio.vm": DEEPCOPY(self._config.config["pio.vm"])
     }).then(function(state) {
 
@@ -564,6 +561,7 @@ PIO.prototype.ensure = function(serviceSelector, options) {
 
         for (var alias in state) {
             if (
+                typeof state[alias].status !== "undefined" &&
                 state[alias].status !== "ready" &&
                 (
                     state[alias].required === true ||
