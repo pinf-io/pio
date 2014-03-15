@@ -520,6 +520,9 @@ function callPlugins(pio, method, state) {
     plugins.forEach(function(plugin) {
         done = Q.when(done, function() {
             return callPlugin(plugin, state).then(function(_state) {
+                if (typeof _state !== "object") {
+                    throw new Error("Plugin '" + plugin + "' must return an object!");
+                }
                 state = DEEPMERGE(state, _state);
             });
         });
@@ -661,6 +664,51 @@ PIO.prototype.deploy = function() {
 
     });
 }
+
+
+PIO.prototype.publish = function() {
+    var self = this;
+
+    if (!self._state["pio.cli.local"].serviceSelector) {
+        // Deploy all services.
+
+        return self._ready.then(function() {
+
+            console.log("Publishing all services:".cyan);
+
+            var done = Q.resolve();
+            for (var serviceGroup in self._config.services) {
+                Object.keys(self._config.services[serviceGroup]).forEach(function(serviceAlias) {
+                    done = Q.when(done, function() {
+                        return self.ensure(serviceAlias).then(function() {
+                            return self.publish();
+                        });
+                    });
+                });
+            }
+            return done;
+        });
+    }
+
+    var serviceAlias = self._state["pio.service"].alias;
+    var serviceGroup = self._state["pio.service"].group;
+
+    if (
+        self._config.services[serviceGroup] &&
+        self._config.services[serviceGroup][serviceAlias] &&
+        self._config.services[serviceGroup][serviceAlias].enabled === false
+    ) {
+        console.log(("Skip publish service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
+        return;
+    }
+
+    return callPlugins(self, "publish", self._state).then(function(state) {
+
+        console.log(("Publish of '" + serviceAlias + "' done!").green);
+
+    });
+}
+
 
 PIO.prototype.test = function() {
     var self = this;
