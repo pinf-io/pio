@@ -33,7 +33,8 @@ var PIO = module.exports = function(seedPath) {
         SSH: SSH,
         RSYNC: RSYNC,
         FSWALKER: FSWALKER,
-        WAITFOR: WAITFOR
+        WAITFOR: WAITFOR,
+        UUID: UUID
     };
 
     // A hash that is affected by changes in `PIO_SEED_SALT` and `PIO_SEED_KEY` only.
@@ -246,6 +247,7 @@ var PIO = module.exports = function(seedPath) {
                     self._configPath = path;
                     self._rtConfigPath = path.replace(/\.json$/, ".rt.json");
                     self._config = config;
+                    self._configOriginal = DEEPCOPY(config);
 
                     function unlock() {
                         if (
@@ -676,17 +678,29 @@ PIO.prototype.publish = function() {
 
             console.log("Publishing all services:".cyan);
 
+            var states = [];
+
             var done = Q.resolve();
             for (var serviceGroup in self._config.services) {
                 Object.keys(self._config.services[serviceGroup]).forEach(function(serviceAlias) {
                     done = Q.when(done, function() {
                         return self.ensure(serviceAlias).then(function() {
-                            return self.publish();
+                            return self.publish().then(function(state) {
+                                states.push(state);
+                                return;
+                            });
                         });
                     });
                 });
             }
-            return done;
+
+            return done.then(function() {
+                return callPlugins(self, "publish.finalize", states).then(function(state) {
+
+                    console.log(("Publish done!").green);
+                    return;
+                });                
+            });
         });
     }
 
@@ -706,6 +720,7 @@ PIO.prototype.publish = function() {
 
         console.log(("Publish of '" + serviceAlias + "' done!").green);
 
+        return state;
     });
 }
 
@@ -751,6 +766,9 @@ PIO.prototype.info = function() {
     var serviceAlias = self._state["pio.cli.local"].serviceSelector;
 
     if (!self._state["pio.cli.local"].serviceSelector) {
+
+        console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._config.config.pio.keyPath + " " + self._config.config["pio.vm"].user + "@" + self._config.config["pio.vm"].ip).bold);
+
         console.log(JSON.stringify(self._config.config, null, 4));
         return Q.resolve();
     }
