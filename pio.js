@@ -727,69 +727,67 @@ PIO.prototype.publish = function() {
 
 PIO.prototype.test = function() {
     var self = this;
-throw new Error("NYI");
-    var serviceAlias = self._state["pio.cli.local"].serviceAlias;
 
-    console.log(("Calling 'test.sh' at: " + serviceConfig.config.pio.seedPath).magenta);
+    var serviceAlias = self._state["pio.service"].alias;
+    var serviceGroup = self._state["pio.service"].group;
 
-    return Q.denodeify(function(callback) {
-        var proc = SPAWN("sh", [
-            "test.sh"
-        ], {
-            cwd: serviceConfig.config.pio.seedPath,
-            env: {
-                PATH: process.env.PATH,
-                PIO_PUBLIC_IP: serviceConfig.config["pio.vm"].ip,
-                PORT: serviceConfig.env.PORT
-            }
-        });
-        proc.stdout.on('data', function (data) {
-            process.stdout.write(data);
-        });
-        proc.stderr.on('data', function (data) {
-            process.stderr.write(data);
-        });
-        proc.on('close', function (code) {
-            if (code !== 0) {
-                console.error("ERROR: Script exited with code '" + code + "'");
-                return callback(new Error("Script exited with code '" + code + "'"));
-            }
-            return callback(null);
-        });
-    })();
+    if (
+        self._config.services[serviceGroup] &&
+        self._config.services[serviceGroup][serviceAlias] &&
+        self._config.services[serviceGroup][serviceAlias].enabled === false
+    ) {
+        console.log(("Skip test for service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
+        return;
+    }
+
+    return callPlugins(self, "test", self._state).then(function(state) {
+
+        return (state["pio.service.test"] && state["pio.service.test"].result) || {};
+    });
 }
 
 
 PIO.prototype.info = function() {
     var self = this;
 
+    console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._config.config.pio.keyPath + " " + self._config.config["pio.vm"].user + "@" + self._config.config["pio.vm"].ip).bold);
+
     var serviceAlias = self._state["pio.cli.local"].serviceSelector;
 
     if (!self._state["pio.cli.local"].serviceSelector) {
-
-        console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._config.config.pio.keyPath + " " + self._config.config["pio.vm"].user + "@" + self._config.config["pio.vm"].ip).bold);
-
-        console.log(JSON.stringify(self._config.config, null, 4));
-        return Q.resolve();
+        return Q.resolve(self._config);
     }
 
     return self._state["pio.deploy"]._call("info", {
         servicePath: self._state["pio.service.deployment"].path
     }).then(function(res) {
-
-console.log("res", res);
-
+        return res;
     });
 }
 
 PIO.prototype.status = function() {
     var self = this;
-throw new Error("NYI");
 
+    var serviceAlias = self._state["pio.service"].alias;
+    var serviceGroup = self._state["pio.service"].group;
+
+    if (
+        self._config.services[serviceGroup] &&
+        self._config.services[serviceGroup][serviceAlias] &&
+        self._config.services[serviceGroup][serviceAlias].enabled === false
+    ) {
+        console.log(("Skip status for service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
+        return;
+    }
+
+    return callPlugins(self, "status", self._state).then(function(state) {
+
+        return (state["pio.service.status"] && state["pio.service.status"].response) || {};
+    });
+
+/*
     var serviceAlias = self._state["pio.cli.local"].serviceAlias;
-
     // TODO: Run local and remote status.
-
     return self._normalizeServiceConfig(serviceAlias).then(function(serviceConfig) {
 
         console.log(("Calling 'status.sh' at: " + serviceConfig.config.pio.seedPath).magenta);
@@ -820,5 +818,6 @@ throw new Error("NYI");
             });
         })();
     });
+*/    
 }
 
