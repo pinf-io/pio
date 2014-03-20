@@ -680,21 +680,19 @@ PIO.prototype.deploy = function() {
 
         console.log(("Deploy of '" + serviceAlias + "' done!").green);
 
-        if (state["pio.deploy"].status === "done") {
+    }).then(function() {
 
-            console.log(("Confirming service is working using status call ...").yellow);
+        console.log(("Confirming service is working using status call ...").yellow);
 
-            return Q.delay(1 * 1000).then(function() {
-                return repeat(function() {
-                    return self.status();
-                }).then(function() {
+        return Q.delay(1 * 1000).then(function() {
+            return repeat(function() {
+                return self.status();
+            }).then(function() {
 
-                    console.log(("Service confirmed working using status call!").green);
+                console.log(("Service confirmed working using status call!").green);
 
-                });
             });
-        }
-        return;
+        });
     });
 }
 
