@@ -680,133 +680,23 @@ PIO.prototype.deploy = function() {
 
         console.log(("Deploy of '" + serviceAlias + "' done!").green);
 
-    }).then(function() {
+        if (state["pio.deploy"].status === "done") {
 
-        console.log(("Confirming service is working using status call ...").yellow);
+            console.log(("Confirming service is working using status call ...").yellow);
 
-        return Q.delay(1 * 1000).then(function() {
-            return repeat(function() {
-                return self.status();
-            }).then(function() {
+            return Q.delay(1 * 1000).then(function() {
+                return repeat(function() {
+                    return self.status();
+                }).then(function() {
 
-                console.log(("Service confirmed working using status call!").green);
+                    console.log(("Service confirmed working using status call!").green);
 
-            });
-        });
-    });
-}
-
-
-PIO.prototype.publish = function() {
-    var self = this;
-
-    if (!self._state["pio.cli.local"].serviceSelector) {
-        // Deploy all services.
-
-        return self._ready.then(function() {
-
-            console.log("Publishing all services:".cyan);
-
-            var states = [];
-
-            var done = Q.resolve();
-            for (var serviceGroup in self._config.services) {
-                Object.keys(self._config.services[serviceGroup]).forEach(function(serviceAlias) {
-                    done = Q.when(done, function() {
-                        return self.ensure(serviceAlias).then(function() {
-                            return self.publish().then(function(state) {
-                                states.push(state);
-                                return;
-                            });
-                        });
-                    });
                 });
-            }
-
-            return done.then(function() {
-                return callPlugins(self, "publish.finalize", states).then(function(state) {
-
-                    console.log(("Publish done!").green);
-                    return;
-                });                
             });
-        });
-    }
-
-    var serviceAlias = self._state["pio.service"].alias;
-    var serviceGroup = self._state["pio.service"].group;
-
-    if (
-        self._config.services[serviceGroup] &&
-        self._config.services[serviceGroup][serviceAlias] &&
-        self._config.services[serviceGroup][serviceAlias].enabled === false
-    ) {
-        console.log(("Skip publish service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
-        return Q.resolve(null);
-    }
-
-    return callPlugins(self, "publish", self._state).then(function(state) {
-
-        console.log(("Publish of '" + serviceAlias + "' done!").green);
-
-        return state;
+        }
+        return;
     });
 }
-
-
-PIO.prototype.test = function() {
-    var self = this;
-
-
-    if (!self._state["pio.cli.local"].serviceSelector) {
-        // Deploy all services.
-
-        return self._ready.then(function() {
-
-            console.log("Testing all services:".cyan);
-
-            var states = [];
-
-            var done = Q.resolve();
-            for (var serviceGroup in self._config.services) {
-                Object.keys(self._config.services[serviceGroup]).forEach(function(serviceAlias) {
-                    done = Q.when(done, function() {
-                        return self.ensure(serviceAlias).then(function() {
-                            return self.test().then(function(state) {
-                                if (state !== null) {
-                                    states.push(state);
-                                }
-                                return;
-                            });
-                        });
-                    });
-                });
-            }
-
-            return done.then(function() {
-                return states;
-            });
-        });
-    }
-
-    var serviceAlias = self._state["pio.service"].alias;
-    var serviceGroup = self._state["pio.service"].group;
-
-    if (
-        self._config.services[serviceGroup] &&
-        self._config.services[serviceGroup][serviceAlias] &&
-        self._config.services[serviceGroup][serviceAlias].enabled === false
-    ) {
-        console.log(("Skip test for service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
-        return Q.resolve(null);
-    }
-
-    return callPlugins(self, "test", self._state).then(function(state) {
-
-        return (state["pio.service.test"] && state["pio.service.test"].result) || {};
-    });
-}
-
 
 PIO.prototype.info = function() {
     var self = this;
@@ -876,5 +766,116 @@ PIO.prototype.status = function() {
 
         return (state["pio.service.status"] && state["pio.service.status"].response) || {};
     });   
+}
+
+PIO.prototype.test = function() {
+    var self = this;
+
+
+    if (!self._state["pio.cli.local"].serviceSelector) {
+        // Deploy all services.
+
+        return self._ready.then(function() {
+
+            console.log("Testing all services:".cyan);
+
+            var states = [];
+
+            var done = Q.resolve();
+            for (var serviceGroup in self._config.services) {
+                Object.keys(self._config.services[serviceGroup]).forEach(function(serviceAlias) {
+                    done = Q.when(done, function() {
+                        return self.ensure(serviceAlias).then(function() {
+                            return self.test().then(function(state) {
+                                if (state !== null) {
+                                    states.push(state);
+                                }
+                                return;
+                            });
+                        });
+                    });
+                });
+            }
+
+            return done.then(function() {
+                return states;
+            });
+        });
+    }
+
+    var serviceAlias = self._state["pio.service"].alias;
+    var serviceGroup = self._state["pio.service"].group;
+
+    if (
+        self._config.services[serviceGroup] &&
+        self._config.services[serviceGroup][serviceAlias] &&
+        self._config.services[serviceGroup][serviceAlias].enabled === false
+    ) {
+        console.log(("Skip test for service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
+        return Q.resolve(null);
+    }
+
+    return callPlugins(self, "test", self._state).then(function(state) {
+
+        return (state["pio.service.test"] && state["pio.service.test"].result) || {};
+    });
+}
+
+PIO.prototype.publish = function() {
+    var self = this;
+
+    if (!self._state["pio.cli.local"].serviceSelector) {
+        // Deploy all services.
+
+        return self._ready.then(function() {
+
+            console.log("Publishing all services:".cyan);
+
+            var states = [];
+
+            var done = Q.resolve();
+            for (var serviceGroup in self._config.services) {
+                Object.keys(self._config.services[serviceGroup]).forEach(function(serviceAlias) {
+                    done = Q.when(done, function() {
+                        return self.ensure(serviceAlias).then(function() {
+                            return self.publish().then(function(state) {
+                                if (state !== null) {
+                                    states.push(state);
+                                }
+                                return;
+                            });
+                        });
+                    });
+                });
+            }
+
+            return done.then(function() {
+                return callPlugins(self, "publish.finalize", states).then(function(state) {
+
+                    console.log(("Publish done!").green);
+                    return;
+                });                
+            });
+        });
+    }
+
+    var serviceAlias = self._state["pio.service"].alias;
+    var serviceGroup = self._state["pio.service"].group;
+
+    if (
+        self._config.services[serviceGroup] &&
+        self._config.services[serviceGroup][serviceAlias] &&
+        self._config.services[serviceGroup][serviceAlias].enabled === false
+    ) {
+        console.log(("Skip publish service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
+        return Q.resolve(null);
+    }
+
+    return callPlugins(self, "publish", self._state).then(function(state) {
+
+        console.log(("Publish of '" + serviceAlias + "' done!").green);
+
+        return state;
+    });
 }
 
