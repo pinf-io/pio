@@ -2,6 +2,7 @@
   "name": "pio",
   "version": "0.2.0",
   "main": "pio.js",
+  "pm": "npm",
   "dependencies": {
     "require.async": "~0.1.1",
     "q": "~1.0.0",

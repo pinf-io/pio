@@ -675,8 +675,6 @@ function callPlugins(pio, method, state) {
     }
     if (
         !pio._config.config ||
-        !pio._config.config["pio.vm"] ||
-        !pio._config.config["pio.vm"].ip ||
         !pio._config.config["pio.cli.local"] ||
         !pio._config.config["pio.cli.local"].plugins ||
         !pio._config.config["pio.cli.local"].plugins[method]
@@ -709,16 +707,6 @@ PIO.prototype.ensure = function(serviceSelector, options) {
     var self = this;
     if (self._state && self._state["pio.cli.local"].serviceSelector === serviceSelector) {
         return Q.resolve(self._state);
-    }
-    if (
-        !self._config.config ||
-        !self._config.config["pio.vm"] ||
-        !self._config.config["pio.vm"].ip ||
-        !self._config.config["pio.cli.local"] ||
-        !self._config.config["pio.cli.local"].plugins ||
-        !self._config.config["pio.cli.local"].plugins.ensure
-    ) {
-        return Q.resolve(null);
     }
     options = options || {
         force: (self._state && self._state["pio.cli.local"] && self._state["pio.cli.local"].force) || false
@@ -781,7 +769,6 @@ function repeat(worker) {
     }
     return Q.timeout(check(), 120 * 1000);
 }
-
 
 PIO.prototype.deploy = function() {
     var self = this;
@@ -849,9 +836,15 @@ PIO.prototype.deploy = function() {
 
         console.log(("Deploy of '" + serviceAlias + "' done!").green);
 
-    }).then(function() {
+        return state;
+    }).then(function(state) {
 
-        console.log(("Confirming service is working using status call ...").yellow);
+        if (state["pio.deploy"].status !== "done") {
+            console.log(("Skip confirming service is working using status call as we did not deploy service.").yellow);
+            return;
+        }
+
+        console.log(("Confirming service is working using status call ...").cyan);
 
         return Q.delay(1 * 1000).then(function() {
             return repeat(function() {
@@ -869,8 +862,6 @@ PIO.prototype.info = function() {
     var self = this;
 
     console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._config.config.pio.keyPath + " " + self._config.config["pio.vm"].user + "@" + self._config.config["pio.vm"].ip).bold);
-
-    var serviceAlias = self._state["pio.cli.local"].serviceSelector;
 
     if (!self._state["pio.cli.local"].serviceSelector) {
         return Q.resolve(self._config);
