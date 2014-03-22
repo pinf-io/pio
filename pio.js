@@ -339,7 +339,19 @@ var PIO = module.exports = function(seedPath) {
                                                 return ensureExtracted(
                                                     PATH.join(catalogBasePath, packageIdParts[0], packageIdParts[1], type),
                                                     PATH.join(catalogBasePath, packageIdParts[0], packageIdParts[1], type + ".tgz")
-                                                );
+                                                ).then(function() {
+                                                    if (
+                                                        catalogDescriptor.packages[packageId].descriptor &&
+                                                        Object.keys(catalogDescriptor.packages[packageId].descriptor).length > 0
+                                                    ) {
+                                                        if (!FS.existsSync(PATH.join(catalogBasePath, packageIdParts[0], packageIdParts[1], "package.json"))) {
+                                                            FS.outputFileSync(
+                                                                PATH.join(catalogBasePath, packageIdParts[0], packageIdParts[1], "package.json"),
+                                                                JSON.stringify(catalogDescriptor.packages[packageId].descriptor, null, 4)
+                                                            );
+                                                        }
+                                                    }
+                                                });
                                             })
                                         );
                                     })(packageId, type);
@@ -693,7 +705,15 @@ function callPlugins(pio, method, state) {
                     if (typeof _state !== "object") {
                         throw new Error("Plugin '" + plugin + "' must return an object!");
                     }
-                    state = DEEPMERGE(state, _state);
+                    for (var alias in _state) {
+                        if (state[alias]) {
+                            for (var name in _state[alias]) {
+                                state[alias][name] = _state[alias][name];
+                            }
+                        } else {
+                            state[alias] = _state[alias];
+                        }
+                    }
                 }
             });
         });
@@ -722,18 +742,34 @@ PIO.prototype.ensure = function(serviceSelector, options) {
 
         // We can proceed if everything is ready or we are not waiting
         // on required services.
-
+        var repeat = false;
         for (var alias in state) {
-            if (
-                typeof state[alias].status !== "undefined" &&
-                state[alias].status !== "ready" &&
-                (
-                    state[alias].required === true ||
-                    state[alias].required !== false
-                )
-            ) {
-                throw ("Service not ready: " + JSON.stringify(alias, state[alias], null, 4));
+            if (typeof state[alias].status !== "undefined") {
+                if (state[alias].status === "repeat") {
+                    console.log(("Service is asking for ensure to repeat: " + JSON.stringify({
+                        "alias": alias,
+                        "state": state[alias]
+                    }, null, 4)).cyan);
+                    repeat = true;
+                } else
+                if (state[alias].status !== "ready" &&
+                    (
+                        state[alias].required === true ||
+                        state[alias].required !== false
+                    )
+                ) {
+                    throw ("Service not ready: " + JSON.stringify({
+                        "alias": alias,
+                        "state": state[alias]
+                    }, null, 4));
+                }
             }
+        }
+
+        if (repeat) {
+            return self._load().then(function() {
+                return self.ensure(serviceSelector, options);
+            });
         }
 
         self._state = state;
@@ -937,7 +973,7 @@ PIO.prototype.test = function() {
 
             console.log("Testing all services:".cyan);
 
-            var states = [];
+            var states = {};
 
             var done = Q.resolve();
             for (var serviceGroup in self._config.services) {
@@ -946,7 +982,7 @@ PIO.prototype.test = function() {
                         return self.ensure(serviceAlias).then(function() {
                             return self.test().then(function(state) {
                                 if (state !== null) {
-                                    states.push(state);
+                                    states[serviceGroup + "--" + serviceAlias] = state;
                                 }
                                 return;
                             });
