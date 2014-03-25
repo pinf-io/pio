@@ -552,7 +552,9 @@ var PIO = module.exports = function(seedPath) {
 
                                     c.hostname = [c.namespace, "-", deploySegment, ".", c.domain].join("");
 
-                                    function getPublicKey() {
+                                    c.keyPath = c.keyPath.replace(/^~\//, ((process.env.HOME || "/home/ubuntu") + "/"));
+
+                                    function getPublicKey(verify) {
                                         var deferred = Q.defer();
                                         var pubKeyPath = c.keyPath + ".pub";
                                         FS.exists(pubKeyPath, function(exists) {
@@ -562,8 +564,13 @@ var PIO = module.exports = function(seedPath) {
                                                     return deferred.resolve(data.match(/^(\S+\s+\S+)(\s+\S+)?\n?$/)[1]);
                                                 });
                                             }
-                                            return deferred.reject(new Error("Use 'ssh-keygen -y -f PRIVATE_KEY_PATH' to get public key from private key"));
-
+                                            if (verify) {
+                                                return deferred.reject(new Error("Still no public key after export!"));
+                                            }
+                                            console.log(("Generating public key from private key '" + c.keyPath + "' and store at: " + pubKeyPath).magenta);
+                                            return SSH.exportPublicKeyFromPrivateKey(c.keyPath, pubKeyPath).then(function() {
+                                                return getPublicKey(true);
+                                            }).then(deferred.resolve).fail(deferred.reject);
                                         });
                                         return deferred.promise;
                                     }
@@ -575,6 +582,7 @@ var PIO = module.exports = function(seedPath) {
                                         configStr = configStr.replace(/\{\{config\.pio\.hostname\}\}/g, c.hostname);
                                         configStr = configStr.replace(/\{\{config\.pio\.domain\}\}/g, c.domain);
                                         configStr = configStr.replace(/\{\{config\['pio\.vm'\]\.ip\}\}/g, self._config.config['pio.vm'].ip);
+                                        configStr = configStr.replace(/\{\{config.pio.namespace\}\}/g, self._config.config['pio'].namespace);
                                         configStr = configStr.replace(/\{\{config\.pio\.keyPub\}\}/g, c.keyPub);
                                         configStr = configStr.replace(/\{\{env.USER\}\}/g, process.env.USER);
                                         self._config.config = JSON.parse(configStr);
