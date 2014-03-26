@@ -323,14 +323,66 @@ var PIO = module.exports = function(seedPath) {
                         })();
                     }
 
+                    function symlinkIfWeCan(packagePath, serviceGroup, serviceAlias) {
+                        return Q.denodeify(function(callback) {
+                            if (!process.env.PIO_SERVICES_PATH) {
+                                return callback(null, false);
+                            }
+                            if (FS.existsSync(packagePath)) {
+                                return callback(null, true);
+                            }
+                            var found = [];
+                            var waitfor = WAITFOR.serial(function(err) {
+                                if (err) return callback(err);
+                                if (found.length > 0) {
+                                    console.log("Can link service '" + serviceGroup + "/" + serviceAlias + "' from: " + found.join(", "));
+                                    console.log(("Linking'" + found[0] + "' to: " + packagePath).magenta);
+                                    if (FS.existsSync(packagePath)) {
+                                        FS.removeSync(packagePath);
+                                    }
+                                    if (!FS.existsSync(PATH.dirname(packagePath))) {
+                                        FS.mkdirsSync(PATH.dirname(packagePath));
+                                    }
+                                    FS.symlinkSync(found[0], packagePath);
+                                    return callback(null, true);
+                                }
+                                return callback(null, false);
+                            });
+                            process.env.PIO_SERVICES_PATH.split(":").forEach(function(path) {
+                                if (!path) return;
+                                waitfor(function(callback) {
+                                    path = PATH.join(path, serviceGroup, serviceAlias);
+                                    return FS.exists(path, function(exists) {
+                                        if (exists) {
+                                            found.push(path);
+                                        }
+                                        return callback(null);
+                                    });
+                                });
+                            });
+                            return waitfor();
+                        })();
+                    }
+
                     // TODO: Use `smi` to install these packages.
                     return ensureCatalogDescriptor().then(function(catalogDescriptor) {
                         var all = [];
-                        for (var packageId in catalogDescriptor.packages) {
-                            if (catalogDescriptor.packages[packageId].archives) {
-                                for (var type in catalogDescriptor.packages[packageId].archives) {
-                                    (function (packageId, type) {
-                                        var packageIdParts = packageId.split("--");
+                        Object.keys(catalogDescriptor.packages).forEach(function(packageId) {
+                            var packageIdParts = packageId.split("--");
+                            all.push(
+                                symlinkIfWeCan(
+                                    PATH.join(catalogBasePath, packageIdParts[0], packageIdParts[1]),
+                                    packageIdParts[0],
+                                    packageIdParts[1]
+                                ).then(function(linked) {
+                                    if (linked) {
+                                        return;
+                                    }
+                                    if (!catalogDescriptor.packages[packageId].archives) {
+                                        return;
+                                    }
+                                    var all = [];
+                                    Object.keys(catalogDescriptor.packages[packageId].archives).forEach(function(type) {
                                         all.push(
                                             ensureArchive(
                                                 PATH.join(catalogBasePath, packageIdParts[0], packageIdParts[1], type + ".tgz"),
@@ -354,10 +406,11 @@ var PIO = module.exports = function(seedPath) {
                                                 });
                                             })
                                         );
-                                    })(packageId, type);
-                                }
-                            }
-                        }
+                                    });
+                                    return Q.all(all);
+                                })
+                            );
+                        });
                         return Q.all(all).then(function() {
                             return catalogDescriptor;
                         });
@@ -384,11 +437,33 @@ var PIO = module.exports = function(seedPath) {
             function loadConfig(path) {
                 // TODO: Use more generic PINF-based config loader here.
 //                console.log("Using config:", path);
-                return Q.denodeify(FS.readJson)(path).then(function(config) {
+
+                function load(path) {
+                    return Q.denodeify(function(callback) {
+                        return FS.readJson(path, function(err, config) {
+                            if (err) return callback(err);
+
+                            self._config = config;
+                            self._configOriginal = DEEPCOPY(self._config);
+
+                            path = path.replace(/\.json$/, ".1.json");
+                            return FS.exists(path, function(exists) {
+                                if (!exists) {
+                                    return callback(null);
+                                }
+                                return FS.readJson(path, function(err, _config) {
+                                    if (err) return callback(err);
+                                    self._config = DEEPMERGE(self._config, _config);
+                                    return callback(null);
+                                });
+                            })
+                        });
+                    })();
+                }
+
+                return load(path).then(function() {
                     self._configPath = path;
                     self._rtConfigPath = path.replace(/\.json$/, ".rt.json");
-                    self._config = config;
-                    self._configOriginal = DEEPCOPY(config);
 
                     function mergeCatalogDescriptors() {
                         if (!self._config.upstream) {
