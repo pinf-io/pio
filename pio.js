@@ -245,11 +245,11 @@ var PIO = module.exports = function(seedPath) {
 
                 var upstreamBasePath = PATH.join(self._configPath, "../_upstream");
 
-                function ensureCatalog(alias, info) {
+                function ensureCatalog(catalogId, info) {
                     var catalogBasePath = upstreamBasePath;
 
                     function ensureCatalogDescriptor(verify) {
-                        var catalogDescriptorPath = PATH.join(catalogBasePath, alias + ".catalog.json");
+                        var catalogDescriptorPath = PATH.join(catalogBasePath, catalogId + ".catalog.json");
                         return Q.denodeify(function(callback) {
                             return FS.exists(catalogDescriptorPath, function(exists) {
                                 if (exists) {
@@ -258,7 +258,7 @@ var PIO = module.exports = function(seedPath) {
                                 if (verify) {
                                     return callback(new Error("No catalog descriptor found at '" + catalogDescriptorPath + "' after download!"));
                                 }
-                                console.log(("Download catalog for alias '" + alias + "' from '" + info.url + "'").magenta);
+                                console.log(("Download catalog for alias '" + catalogId + "' from '" + info.url + "'").magenta);
                                 return REQUEST({
                                     method: "GET",
                                     url: info.url,
@@ -376,9 +376,10 @@ var PIO = module.exports = function(seedPath) {
                         var all = [];
                         Object.keys(catalogDescriptor.packages).forEach(function(packageId) {
                             var packageIdParts = packageId.split("--");
+                            var packageBasePath = PATH.join(catalogBasePath, catalogId, packageId);
                             all.push(
                                 symlinkIfWeCan(
-                                    PATH.join(catalogBasePath, packageId),
+                                    packageBasePath,
                                     packageId
                                 ).then(function(linked) {
                                     if (linked) {
@@ -391,20 +392,20 @@ var PIO = module.exports = function(seedPath) {
                                     Object.keys(catalogDescriptor.packages[packageId].archives).forEach(function(type) {
                                         all.push(
                                             ensureArchive(
-                                                PATH.join(catalogBasePath, packageId, type + ".tgz"),
+                                                PATH.join(packageBasePath, type + ".tgz"),
                                                 catalogDescriptor.packages[packageId].archives[type]
                                             ).then(function() {
                                                 return ensureExtracted(
-                                                    PATH.join(catalogBasePath, packageId, type),
-                                                    PATH.join(catalogBasePath, packageId, type + ".tgz")
+                                                    PATH.join(packageBasePath, type),
+                                                    PATH.join(packageBasePath, type + ".tgz")
                                                 ).then(function() {
                                                     if (
                                                         catalogDescriptor.packages[packageId].descriptor &&
                                                         Object.keys(catalogDescriptor.packages[packageId].descriptor).length > 0
                                                     ) {
-                                                        if (!FS.existsSync(PATH.join(catalogBasePath, packageId, "package.json"))) {
+                                                        if (!FS.existsSync(PATH.join(packageBasePath, "package.json"))) {
                                                             FS.outputFileSync(
-                                                                PATH.join(catalogBasePath, packageId, "package.json"),
+                                                                PATH.join(packageBasePath, "package.json"),
                                                                 JSON.stringify(catalogDescriptor.packages[packageId].descriptor, null, 4)
                                                             );
                                                         }
@@ -487,14 +488,14 @@ var PIO = module.exports = function(seedPath) {
                     return mergeCatalogDescriptors().then(function() {
 
                         var services = {};
-                        var basePath = PATH.join(self._configPath, "..", "_upstream");
-                        return Q.denodeify(GLOB)("*", {
+                        var basePath = PATH.join(self._configPath, "..", self._config.config["pio"].servicesPath);
+                        return Q.denodeify(GLOB)("*/*", {
                             cwd: basePath
                         }).then(function(files) {
                             files.forEach(function(filepath) {
-                                services[filepath] = PATH.join(basePath, filepath);
+                                services[filepath.split("/").pop()] = PATH.join(basePath, filepath);
                             });
-                            basePath = PATH.join(self._configPath, "..", self._config.config["pio"].servicesPath);
+                            basePath = PATH.join(self._configPath, "..", "_upstream");
                             return Q.denodeify(GLOB)("*/*", {
                                 cwd: basePath
                             }).then(function(files) {
@@ -833,13 +834,40 @@ PIO.prototype.ensure = function(serviceSelector, options) {
     options = options || {
         force: (self._state && self._state["pio.cli.local"] && self._state["pio.cli.local"].force) || false
     }
+    var services = {};
+    var serviceGroups = {};
+    for (var serviceGroup in self._config.services) {
+        Object.keys(self._config.services[serviceGroup]).forEach(function(serviceId) {
+            if (serviceGroups[serviceId]) {
+                throw new Error("Cannot redeclare service '" + serviceId + "' in group '" + serviceId + "'. It is already declared in '" + serviceConfig[serviceId] + "'");
+            }
+            serviceGroups[serviceId] = serviceGroup;
+        });
+    }
+    for (var serviceId in self._locatedServices) {
+        if (serviceGroups[serviceId]) {
+            services[serviceId] = {
+                group: serviceGroups[serviceId],
+                path: self._locatedServices[serviceId],
+                descriptor: DEEPCOPY(self._config.services[serviceGroups[serviceId]][serviceId])
+            };
+            if (typeof services[serviceId].descriptor.enabled === "undefined") {
+                services[serviceId].enabled = true;
+            } else {
+                services[serviceId].enabled = services[serviceId].descriptor.enabled;
+            }
+        }
+    }
     return callPlugins(self, "ensure", {
         "pio.cli.local": {
             serviceSelector: serviceSelector || null,
             force: options.force || false
         },
         "pio": DEEPMERGE(DEEPCOPY(self._config.config["pio"]), {}),
-        "pio.vm": DEEPCOPY(self._config.config["pio.vm"])
+        "pio.vm": DEEPCOPY(self._config.config["pio.vm"]),
+        "pio.services": {
+            "services": services
+        }
     }).then(function(state) {
 
         // We can proceed if everything is ready or we are not waiting
@@ -882,16 +910,16 @@ PIO.prototype.list = function() {
     var self = this;
     return self._ready.then(function() {
         var services = [];
-        for (var serviceGroup in self._config.services) {
-            for (var serviceAlias in self._config.services[serviceGroup]) {
-                services.push({
-                    group: serviceGroup,
-                    alias: serviceAlias
-                });
-            }
+        for (var serviceId in self._state["pio.services"].services) {
+            services.push({
+                group: self._state["pio.services"].services[serviceId].group,
+                id: serviceId,
+                path: self._state["pio.services"].services[serviceId].path,
+                pathReal: FS.realpathSync(self._state["pio.services"].services[serviceId].path),
+                enabled: self._state["pio.services"].services[serviceId].enabled
+            });
         }
         return services;
-//        return self._call("list", {});
     });
 }
 
@@ -956,15 +984,8 @@ PIO.prototype.deploy = function() {
         });
     }
 
-    var serviceAlias = self._state["pio.service"].alias;
-    var serviceGroup = self._state["pio.service"].group;
-
-    if (
-        self._config.services[serviceGroup] &&
-        self._config.services[serviceGroup][serviceAlias] &&
-        self._config.services[serviceGroup][serviceAlias].enabled === false
-    ) {
-        console.log(("Skip deploy service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
+    if (self._state["pio.service"].enabled === false) {
+        console.log(("Skip deploy for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
         return Q.resolve(null);
     }
 
@@ -972,7 +993,7 @@ PIO.prototype.deploy = function() {
 
     return callPlugins(self, "deploy", self._state).then(function(state) {
 
-        console.log(("Deploy of '" + serviceAlias + "' done!").green);
+        console.log(("Deploy of '" + self._state["pio.service"].id + "' done!").green);
 
         return state;
     }).then(function(state) {
@@ -1008,7 +1029,13 @@ PIO.prototype.info = function() {
     return self._state["pio.deploy"]._call("info", {
         servicePath: self._state["pio.service.deployment"].path
     }).then(function(res) {
-        return res;
+        // NOTE: This format is going to change.
+        return {
+            remote: res,
+            local: {
+                service: self._state["pio.service"]
+            }
+        };
     });
 }
 
@@ -1022,23 +1049,20 @@ PIO.prototype.status = function() {
 
             console.log("Getting status for all services:".cyan);
 
-            var states = [];
-
+            var states = {};
             var done = Q.resolve();
-            for (var serviceGroup in self._config.services) {
-                Object.keys(self._config.services[serviceGroup]).forEach(function(serviceAlias) {
-                    done = Q.when(done, function() {
-                        return self.ensure(serviceAlias).then(function() {
-                            return self.status().then(function(state) {
-                                if (state !== null) {
-                                    states.push(state);
-                                }
-                                return;
-                            });
+            Object.keys(self._state["pio.services"].services).forEach(function(serviceId) {
+                done = Q.when(done, function() {
+                    return self.ensure(serviceId).then(function() {
+                        return self.status().then(function(state) {
+                            if (state !== null) {
+                                states[serviceId] = state;
+                            }
+                            return;
                         });
                     });
                 });
-            }
+            });
 
             return done.then(function() {
                 return states;
@@ -1046,20 +1070,12 @@ PIO.prototype.status = function() {
         });
     }
 
-    var serviceAlias = self._state["pio.service"].alias;
-    var serviceGroup = self._state["pio.service"].group;
-
-    if (
-        self._config.services[serviceGroup] &&
-        self._config.services[serviceGroup][serviceAlias] &&
-        self._config.services[serviceGroup][serviceAlias].enabled === false
-    ) {
-        console.log(("Skip status for service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
+    if (self._state["pio.service"].enabled === false) {
+        console.log(("Skip status for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
         return Q.resolve(null);
     }
 
     return callPlugins(self, "status", self._state).then(function(state) {
-
         return (state["pio.service.status"] && state["pio.service.status"].response) || {};
     });   
 }
@@ -1076,22 +1092,19 @@ PIO.prototype.test = function() {
             console.log("Testing all services:".cyan);
 
             var states = {};
-
             var done = Q.resolve();
-            for (var serviceGroup in self._config.services) {
-                Object.keys(self._config.services[serviceGroup]).forEach(function(serviceAlias) {
-                    done = Q.when(done, function() {
-                        return self.ensure(serviceAlias).then(function() {
-                            return self.test().then(function(state) {
-                                if (state !== null) {
-                                    states[serviceGroup + "--" + serviceAlias] = state;
-                                }
-                                return;
-                            });
+            Object.keys(self._state["pio.services"].services).forEach(function(serviceId) {
+                done = Q.when(done, function() {
+                    return self.ensure(serviceId).then(function() {
+                        return self.test().then(function(state) {
+                            if (state !== null) {
+                                states[serviceId] = state;
+                            }
+                            return;
                         });
                     });
                 });
-            }
+            });
 
             return done.then(function() {
                 return states;
@@ -1099,15 +1112,8 @@ PIO.prototype.test = function() {
         });
     }
 
-    var serviceAlias = self._state["pio.service"].alias;
-    var serviceGroup = self._state["pio.service"].group;
-
-    if (
-        self._config.services[serviceGroup] &&
-        self._config.services[serviceGroup][serviceAlias] &&
-        self._config.services[serviceGroup][serviceAlias].enabled === false
-    ) {
-        console.log(("Skip test for service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
+    if (self._state["pio.service"].enabled === false) {
+        console.log(("Skip test for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
         return Q.resolve(null);
     }
 
@@ -1128,22 +1134,19 @@ PIO.prototype.publish = function() {
             console.log("Publishing all services:".cyan);
 
             var states = [];
-
             var done = Q.resolve();
-            for (var serviceGroup in self._config.services) {
-                Object.keys(self._config.services[serviceGroup]).forEach(function(serviceAlias) {
-                    done = Q.when(done, function() {
-                        return self.ensure(serviceAlias).then(function() {
-                            return self.publish().then(function(state) {
-                                if (state !== null) {
-                                    states.push(state);
-                                }
-                                return;
-                            });
+            Object.keys(self._state["pio.services"].services).forEach(function(serviceId) {
+                done = Q.when(done, function() {
+                    return self.ensure(serviceId).then(function() {
+                        return self.publish().then(function(state) {
+                            if (state !== null) {
+                                states.push(state);
+                            }
+                            return;
                         });
                     });
                 });
-            }
+            });
 
             return done.then(function() {
                 return callPlugins(self, "publish.finalize", states).then(function(state) {
@@ -1155,21 +1158,14 @@ PIO.prototype.publish = function() {
         });
     }
 
-    var serviceAlias = self._state["pio.service"].alias;
-    var serviceGroup = self._state["pio.service"].group;
-
-    if (
-        self._config.services[serviceGroup] &&
-        self._config.services[serviceGroup][serviceAlias] &&
-        self._config.services[serviceGroup][serviceAlias].enabled === false
-    ) {
-        console.log(("Skip publish service '" + serviceAlias + "' from group '" + serviceGroup + "'. It is disabled!").yellow);
+    if (self._state["pio.service"].enabled === false) {
+        console.log(("Skip publish for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
         return Q.resolve(null);
     }
 
     return callPlugins(self, "publish", self._state).then(function(state) {
 
-        console.log(("Publish of '" + serviceAlias + "' done!").green);
+        console.log(("Publish of '" + self._state["pio.service"].id + "' done!").green);
 
         return state;
     });
