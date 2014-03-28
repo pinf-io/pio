@@ -694,6 +694,8 @@ var PIO = module.exports = function(seedPath) {
                     });
                 });
             }
+
+            // TODO: Allow different config loading profiles based on environment.
             return Q.denodeify(function(callback) {
                 if (process.env.PIO_CONFIG_PATH) {
                     return loadConfig(process.env.PIO_CONFIG_PATH).then(function() {
@@ -706,9 +708,28 @@ var PIO = module.exports = function(seedPath) {
                             return callback(null);
                         }).fail(callback);
                     }
-                    return loadConfig(PATH.join(seedPath, ".pio.json")).then(function() {
-                        return callback(null);
-                    }).fail(callback);
+                    return FS.exists(PATH.join(seedPath, "pio.json"), function(exists) {
+                        if (exists) {
+                            return loadConfig(PATH.join(seedPath, ".pio.json")).then(function() {
+                                return callback(null);
+                            }).fail(callback);
+                        }
+
+                        // Locate parent config and select service assuming we are loading config
+                        // for a dev package.
+                        return loadConfig(PATH.join(seedPath, "../../../pio.json")).then(function() {
+
+                            self._config.config["pio.cli.local"].plugins = {
+                                "ensure": [
+                                    "service:pio.service/module:pio.cli.local.ensure.plugin"
+                                ]
+                            };
+
+                            return self.ensure(PATH.basename(seedPath));
+                        }).then(function() {
+                            return callback(null);
+                        }).fail(callback);
+                    });
                 });
             })();
         });
