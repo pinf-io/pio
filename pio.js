@@ -524,7 +524,14 @@ var PIO = module.exports = function(seedPath) {
                                 } catch(err) {
                                     deferred.reject(err);
                                 }
-                                return deferred.promise;
+                                return deferred.promise.fail(function(err) {
+                                    if (/Cannot find module/.test(err.message)) {
+// Silently fail for now if plugin not found.
+// TODO: Fix this by loading a *service* profile which unlocks using agent call vs cli config that asks user.
+                                        return;
+                                    }
+                                    throw err;
+                                });
                             }
 
                             return unlock().then(function(unlockInfo) {
@@ -1023,9 +1030,11 @@ PIO.prototype.deploy = function() {
 
     console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._config.config.pio.keyPath + " " + self._config.config["pio.vm"].user + "@" + self._config.config["pio.vm"].ip).bold);
 
+    console.log(("Deploy '" + self._state["pio.service"].id + "' ...").magenta);
+
     return callPlugins(self, "deploy", self._state).then(function(state) {
 
-        console.log(("Deploy of '" + self._state["pio.service"].id + "' done!").green);
+        console.log(("Deploy '" + self._state["pio.service"].id + "' done!").green);
 
         return state;
     }).then(function(state) {
