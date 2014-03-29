@@ -944,15 +944,26 @@ PIO.prototype.list = function() {
     });
 }
 
-function repeat(worker) {
+function repeat(worker, failIsGood) {
     function check() {
-        return worker().fail(function(err) {
+        function again() {
             console.log("Warning: Attempt failed: " + err.stack);
             console.log("Waiting for 3 seconds and trying again ...");
             return Q.delay(3 * 1000).then(function() {
                 return check();
             });
-        });
+        }
+        if (failIsGood) {
+            return worker().then(function() {
+                return again();
+            }).fail(function(err) {
+                // Ignore error. We are good!
+            });
+        } else {
+            return worker().fail(function(err) {
+                return again();
+            });
+        }
     }
     return Q.timeout(check(), 120 * 1000);
 }
@@ -1099,6 +1110,129 @@ PIO.prototype.status = function() {
     return callPlugins(self, "status", self._state).then(function(state) {
         return (state["pio.service.status"] && state["pio.service.status"].response) || {};
     });   
+}
+
+PIO.prototype.start = function() {
+    var self = this;
+
+    if (!self._state["pio.cli.local"].serviceSelector) {
+        return Q.reject("Service must be selected!");
+    }
+
+    var commands = [];
+    commands.push('. /opt/bin/activate.sh');
+    for (var name in self._state["pio.service.deployment"].env) {
+        commands.push('export ' + name + '="' + self._state["pio.service.deployment"].env[name] + '"');
+    }
+    commands.push('export PIO_SCRIPTS_PATH="' + PATH.join(self._state["pio.service.deployment"].path, "live/scripts") + '"');
+    commands.push('echo "Calling \'start.sh\' on VM (cwd: ' + self._state["pio.service.deployment"].path + '):"');
+    commands.push('sh $PIO_SCRIPTS_PATH/start.sh');
+
+    return self._state["pio.deploy"]._call("_runCommands", {
+        commands: commands,
+        cwd: PATH.join(self._state["pio.service.deployment"].path, "live/install")
+    }).then(function(response) {
+        if (!response) {
+            throw new Error("Remote commands exited with no response");
+        }
+        if (response.code !== 0)  {
+            throw new Error("Remote commands exited with code: " + response.code);
+        }
+
+        console.log(("Confirming service is working using status call ...").cyan);
+
+        return Q.delay(1 * 1000).then(function() {
+            return repeat(function() {
+                return self.status();
+            }).then(function() {
+
+                console.log(("Service confirmed working using status call!").green);
+
+            });
+        });
+    });
+}
+
+PIO.prototype.stop = function() {
+    var self = this;
+
+    if (!self._state["pio.cli.local"].serviceSelector) {
+        return Q.reject("Service must be selected!");
+    }
+
+    var commands = [];
+    commands.push('. /opt/bin/activate.sh');
+    for (var name in self._state["pio.service.deployment"].env) {
+        commands.push('export ' + name + '="' + self._state["pio.service.deployment"].env[name] + '"');
+    }
+    commands.push('export PIO_SCRIPTS_PATH="' + PATH.join(self._state["pio.service.deployment"].path, "live/scripts") + '"');
+    commands.push('echo "Calling \'stop.sh\' on VM (cwd: ' + self._state["pio.service.deployment"].path + '):"');
+    commands.push('sh $PIO_SCRIPTS_PATH/stop.sh');
+
+    return self._state["pio.deploy"]._call("_runCommands", {
+        commands: commands,
+        cwd: PATH.join(self._state["pio.service.deployment"].path, "live/install")
+    }).then(function(response) {
+        if (!response) {
+            throw new Error("Remote commands exited with no response");
+        }
+        if (response.code !== 0)  {
+            throw new Error("Remote commands exited with code: " + response.code);
+        }
+
+        console.log(("Confirming service is working using status call ...").cyan);
+
+        return Q.delay(1 * 1000).then(function() {
+            return repeat(function() {
+                return self.status();
+            }, true).then(function() {
+
+                console.log(("Service confirmed working using status call!").green);
+
+            });
+        });
+    });
+}
+
+PIO.prototype.restart = function() {
+    var self = this;
+
+    if (!self._state["pio.cli.local"].serviceSelector) {
+        return Q.reject("Service must be selected!");
+    }
+
+    var commands = [];
+    commands.push('. /opt/bin/activate.sh');
+    for (var name in self._state["pio.service.deployment"].env) {
+        commands.push('export ' + name + '="' + self._state["pio.service.deployment"].env[name] + '"');
+    }
+    commands.push('export PIO_SCRIPTS_PATH="' + PATH.join(self._state["pio.service.deployment"].path, "live/scripts") + '"');
+    commands.push('echo "Calling \'restart.sh\' on VM (cwd: ' + self._state["pio.service.deployment"].path + '):"');
+    commands.push('sh $PIO_SCRIPTS_PATH/restart.sh');
+
+    return self._state["pio.deploy"]._call("_runCommands", {
+        commands: commands,
+        cwd: PATH.join(self._state["pio.service.deployment"].path, "live/install")
+    }).then(function(response) {
+        if (!response) {
+            throw new Error("Remote commands exited with no response");
+        }
+        if (response.code !== 0)  {
+            throw new Error("Remote commands exited with code: " + response.code);
+        }
+
+        console.log(("Confirming service is working using status call ...").cyan);
+
+        return Q.delay(1 * 1000).then(function() {
+            return repeat(function() {
+                return self.status();
+            }).then(function() {
+
+                console.log(("Service confirmed working using status call!").green);
+
+            });
+        });
+    });
 }
 
 PIO.prototype.test = function() {
