@@ -802,7 +802,7 @@ function resolvePluginPath(pio, plugin) {
 }
 
 
-function callPlugins(pio, method, state) {
+function callPlugins(pio, method, state, options) {
     function callPlugin(plugin, state) {
         var deferred = Q.defer();
         try {
@@ -851,6 +851,14 @@ function callPlugins(pio, method, state) {
     });
     return done.then(function() {
         return state;
+    }).fail(function(err) {
+        // TODO: Remove this once pio can install usign slim setup without requiring plugins.
+        //       i.e. when using `smi` to install dependencies.
+        if (err.ignorePluginFailures) {
+            // Ignore error module require errors.
+            return;
+        }
+        throw err;
     });
 }
 
@@ -896,7 +904,7 @@ PIO.prototype.ensure = function(serviceSelector, options) {
         "pio.services": {
             "services": services
         }
-    }).then(function(state) {
+    }, options).then(function(state) {
 
         // We can proceed if everything is ready or we are not waiting
         // on required services.
