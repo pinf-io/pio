@@ -251,185 +251,22 @@ var PIO = module.exports = function(seedPath) {
                     function ensureCatalogDescriptor(verify) {
                         var catalogDescriptorPath = PATH.join(catalogBasePath, catalogId + ".catalog.json");
                         return Q.denodeify(function(callback) {
-                            return FS.exists(catalogDescriptorPath, function(exists) {
-                                if (exists) {
-                                    return FS.readJson(catalogDescriptorPath, callback);
-                                }
-                                if (verify) {
-                                    return callback(new Error("No catalog descriptor found at '" + catalogDescriptorPath + "' after download!"));
-                                }
-                                console.log(("Download catalog for alias '" + catalogId + "' from '" + info.url + "'").magenta);
-                                return REQUEST({
-                                    method: "GET",
-                                    url: info.url,
-                                    headers: {
-                                        "x-auth-code": info.key
-                                    }
-                                }, function(err, response, body) {
-                                    if (err) return callback(err);
-                                    try {
-                                        JSON.parse(body);
-                                    } catch(err) {
-                                        console.error("Error parsing catalog JSON!");
-                                        return callback(err);
-                                    }
-                                    return FS.outputFile(catalogDescriptorPath, body, function(err) {
-                                        if (err) return callback(err);
-                                        return ensureCatalogDescriptor(true).then(function(catalog) {
-                                            return callback(null, catalog);
-                                        }).fail(callback);
-                                    });
-                                });
-                            });
-                        })();
-                    }
-
-                    function ensureArchive(archivePath, url) {
-                        return Q.denodeify(function(callback) {
-                            return FS.exists(archivePath, function(exists) {
-                                if (exists) return callback(null);
-                                if (!FS.existsSync(PATH.dirname(archivePath))) {
-                                    FS.mkdirsSync(PATH.dirname(archivePath));
-                                }
-                                try {
-                                    console.log(("Downloading package archive from '" + url + "'").magenta);
-                                    REQUEST(url, function(err) {
-                                        if (err) return callback(err);
-                                        console.log(("Downloaded package archive from '" + url + "'").green);
-                                        return callback(null);
-                                    }).pipe(FS.createWriteStream(archivePath))
-                                } catch(err) {
-                                    return callback(err);
-                                }
-                            });
-                        })();
-                    }
-
-                    function ensureExtracted(packagePath, archivePath) {
-                        return Q.denodeify(function(callback) {
-                            return FS.exists(packagePath, function(exists) {
-                                if (exists) return callback(null);
-                                console.log(("Extract '" + archivePath + "' to '" + packagePath + "'").magenta);
-                                if (!FS.existsSync(packagePath)) {
-                                    FS.mkdirsSync(packagePath);
-                                }
-                                return EXEC('tar -xzf "' + PATH.basename(archivePath) + '" --strip 1 -C "' + packagePath + '/"', {
-                                    cwd: PATH.dirname(archivePath)
-                                }, function(err, stdout, stderr) {
-                                    if (err) return callback(err);
-                                    console.log(("Archive '" + archivePath + "' extracted to '" + packagePath + "'").green);
-                                    return callback(null);
-                                });
-                            });
-                        })();
-                    }
-
-                    function symlinkIfWeCan(packagePath, serviceId) {
-                        return Q.denodeify(function(callback) {
-                            if (!process.env.PIO_SERVICES_PATH) {
-                                return callback(null, false);
-                            }
-                            if (FS.existsSync(packagePath)) {
-                                return callback(null, true);
-                            }
-                            var found = [];
-                            var waitfor = WAITFOR.serial(function(err) {
-                                if (err) return callback(err);
-                                if (found.length > 0) {
-                                    console.log("Can link service '" + serviceId + "' from: " + found.join(", "));
-                                    console.log(("Linking'" + found[0] + "' to: " + packagePath).magenta);
-                                    if (FS.existsSync(packagePath)) {
-                                        FS.removeSync(packagePath);
-                                    }
-                                    if (!FS.existsSync(PATH.dirname(packagePath))) {
-                                        FS.mkdirsSync(PATH.dirname(packagePath));
-                                    }
-                                    FS.symlinkSync(found[0], packagePath);
-                                    return callback(null, true);
-                                }
-                                return callback(null, false);
-                            });
-                            process.env.PIO_SERVICES_PATH.split(":").forEach(function(path) {
-                                if (!path) return;
-                                waitfor(function(callback) {
-
-                                    return Q.denodeify(GLOB)("{*,*/*}", {
-                                        cwd: path
-                                    }).then(function(files) {
-                                        var services = {};
-                                        files.forEach(function(filepath) {
-                                            services[filepath.split("/").pop()] = PATH.join(path, filepath);
-                                        });
-                                        if (services[serviceId]) {
-                                            found.push(services[serviceId]);
-                                        }
-                                        return callback(null);
-                                    });
-                                });
-                            });
-                            return waitfor();
+                            return FS.readJson(catalogDescriptorPath, callback);
                         })();
                     }
 
                     // TODO: Use `smi` to install these packages.
                     return ensureCatalogDescriptor().then(function(catalogDescriptor) {
-                        var all = [];
-                        Object.keys(catalogDescriptor.packages).forEach(function(packageId) {
-                            var packageIdParts = packageId.split("--");
-                            var packageBasePath = PATH.join(catalogBasePath, catalogId, packageId);
-                            all.push(
-                                symlinkIfWeCan(
-                                    packageBasePath,
-                                    packageId
-                                ).then(function(linked) {
-                                    if (linked) {
-                                        return;
-                                    }
-                                    if (!catalogDescriptor.packages[packageId].archives) {
-                                        return;
-                                    }
-                                    var all = [];
-                                    Object.keys(catalogDescriptor.packages[packageId].archives).forEach(function(type) {
-                                        all.push(
-                                            ensureArchive(
-                                                PATH.join(packageBasePath, type + ".tgz"),
-                                                catalogDescriptor.packages[packageId].archives[type]
-                                            ).then(function() {
-                                                return ensureExtracted(
-                                                    PATH.join(packageBasePath, type),
-                                                    PATH.join(packageBasePath, type + ".tgz")
-                                                ).then(function() {
-                                                    if (
-                                                        catalogDescriptor.packages[packageId].descriptor &&
-                                                        Object.keys(catalogDescriptor.packages[packageId].descriptor).length > 0
-                                                    ) {
-                                                        if (!FS.existsSync(PATH.join(packageBasePath, "package.json"))) {
-                                                            FS.outputFileSync(
-                                                                PATH.join(packageBasePath, "package.json"),
-                                                                JSON.stringify(catalogDescriptor.packages[packageId].descriptor, null, 4)
-                                                            );
-                                                        }
-                                                    }
-                                                });
-                                            })
-                                        );
-                                    });
-                                    return Q.all(all);
-                                })
-                            );
-                        });
-                        return Q.all(all).then(function() {
-                            return catalogDescriptor;
-                        });
+                        return catalogDescriptor;
                     });
                 }
 
                 var combinedDescriptor = {};
                 var done = Q.resolve();
-                if (self._config.upstream) {
-                    Object.keys(self._config.upstream).forEach(function(alias) {
+                if (self._config.upstream && self._config.upstream.catalogs) {
+                    Object.keys(self._config.upstream.catalogs).forEach(function(alias) {
                         done = Q.when(done, function() {
-                            return ensureCatalog(alias, self._config.upstream[alias]).then(function(catalogDescriptor) {
+                            return ensureCatalog(alias, self._config.upstream.catalogs[alias]).then(function(catalogDescriptor) {
                                 combinedDescriptor = DEEPMERGE(combinedDescriptor, catalogDescriptor);
                             });
                         });
