@@ -847,24 +847,24 @@ PIO.prototype.deploy = function() {
         // Deploy all services.
 
         return self._ready.then(function() {
-
-            console.log("Deploying services sequentially according to 'boot' order:".cyan);
-
             var done = Q.resolve();
-            self._config.config["pio.vm"].provision.forEach(function(serviceId) {
-                done = Q.when(done, function() {
-                    return self.ensure(serviceId).then(function() {
-                        return self.deploy().then(function() {
-                            return self._state["pio.deploy"]._ensure().then(function(_response) {
-                                if (_response.status === "ready") {
-                                    console.log("Switching to using dnode transport where possible!".green);
-                                }
-                                return;
+            if (self._config.config["pio.vm"].provision) {
+                console.log("Deploying services sequentially according to 'boot' order:".cyan);
+                self._config.config["pio.vm"].provision.forEach(function(serviceId) {
+                    done = Q.when(done, function() {
+                        return self.ensure(serviceId).then(function() {
+                            return self.deploy().then(function() {
+                                return self._state["pio.deploy"]._ensure().then(function(_response) {
+                                    if (_response.status === "ready") {
+                                        console.log("Switching to using dnode transport where possible!".green);
+                                    }
+                                    return;
+                                });
                             });
                         });
                     });
                 });
-            });
+            }
             return Q.when(done, function() {
 
                 // TODO: Deploy in parallel by default if nothing has changed.
@@ -872,7 +872,10 @@ PIO.prototype.deploy = function() {
 
                 var done = Q.resolve();
                 Object.keys(self._state["pio.services"].services).forEach(function(serviceId) {
-                    if (self._config.config["pio.vm"].provision.indexOf(serviceId) !== -1) {
+                    if (
+                        self._config.config["pio.vm"].provision &&
+                        self._config.config["pio.vm"].provision.indexOf(serviceId) !== -1
+                    ) {
                         return;
                     }
                     done = Q.when(done, function() {
