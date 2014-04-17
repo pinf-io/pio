@@ -21,6 +21,7 @@ const EXEC = require("child_process").exec;
 const NET = require("net");
 const WAITFOR = require("waitfor");
 const GLOB = require("glob");
+const SMI = require("smi.cli");
 
 
 var PIO = module.exports = function(seedPath) {
@@ -251,7 +252,12 @@ var PIO = module.exports = function(seedPath) {
                     function ensureCatalogDescriptor(verify) {
                         var catalogDescriptorPath = PATH.join(catalogBasePath, catalogId + ".catalog.json");
                         return Q.denodeify(function(callback) {
-                            return FS.readJson(catalogDescriptorPath, callback);
+                            return SMI.readDescriptor(catalogDescriptorPath, {
+                                basePath: PATH.join(self._configPath, "..")
+                            }, function(err, descriptor) {
+                                if (err) return callback(err);
+                                return callback(null, descriptor);
+                            });
                         })();
                     }
 
@@ -284,7 +290,9 @@ var PIO = module.exports = function(seedPath) {
 
                 function load(path) {
                     return Q.denodeify(function(callback) {
-                        return FS.readJson(path, function(err, config) {
+                        return SMI.readDescriptor(path, {
+                            basePath: PATH.join(path, "..")
+                        }, function(err, config) {
                             if (err) return callback(err);
 
                             self._config = config;
@@ -295,12 +303,22 @@ var PIO = module.exports = function(seedPath) {
                                 if (!exists) {
                                     return callback(null);
                                 }
+                                return SMI.readDescriptor(path, {
+                                    basePath: PATH.join(path, "..")
+                                }, function(err, _config) {
+                                    if (err) return callback(err);
+                                    
+                                    self._config = DEEPMERGE(self._config, _config);
+                                    return callback(null);
+                                });
+/*
                                 return FS.readJson(path, function(err, _config) {
                                     if (err) return callback(err);
                                     self._config = DEEPMERGE(self._config, _config);
                                     return callback(null);
                                 });
-                            })
+*/
+                            });
                         });
                     })();
                 }
@@ -323,7 +341,6 @@ var PIO = module.exports = function(seedPath) {
                     }
 
                     return mergeCatalogDescriptors().then(function() {
-
                         var services = {};
                         var basePath = PATH.join(self._configPath, "..", self._config.config["pio"].servicesPath);
                         return Q.denodeify(GLOB)("*/*", {
@@ -711,6 +728,9 @@ PIO.prototype.ensure = function(serviceSelector, options) {
     var serviceGroups = {};
     for (var serviceGroup in self._config.services) {
         Object.keys(self._config.services[serviceGroup]).forEach(function(serviceId) {
+            if (self._config.services[serviceGroup][serviceId] === null) {
+                return;
+            }
             if (serviceGroups[serviceId]) {
                 throw new Error("Cannot redeclare service '" + serviceId + "' in group '" + serviceId + "'. It is already declared in '" + serviceConfig[serviceId] + "'");
             }
@@ -831,9 +851,9 @@ PIO.prototype.deploy = function() {
             console.log("Deploying services sequentially according to 'boot' order:".cyan);
 
             var done = Q.resolve();
-            self._config.config["pio.vm"].provision.forEach(function(serviceAlias) {
+            self._config.config["pio.vm"].provision.forEach(function(serviceId) {
                 done = Q.when(done, function() {
-                    return self.ensure(serviceAlias).then(function() {
+                    return self.ensure(serviceId).then(function() {
                         return self.deploy().then(function() {
                             return self._state["pio.deploy"]._ensure().then(function(_response) {
                                 if (_response.status === "ready") {
@@ -851,18 +871,16 @@ PIO.prototype.deploy = function() {
                 console.log("Deploying remaining services sequentially:".cyan);
 
                 var done = Q.resolve();
-                for (var serviceGroup in self._config.services) {
-                    Object.keys(self._config.services[serviceGroup]).forEach(function(serviceAlias) {
-                        if (self._config.config["pio.vm"].provision.indexOf(serviceAlias) !== -1) {
-                            return;
-                        }
-                        done = Q.when(done, function() {
-                            return self.ensure(serviceAlias).then(function() {
-                                return self.deploy();
-                            });
+                Object.keys(self._state["pio.services"].services).forEach(function(serviceId) {
+                    if (self._config.config["pio.vm"].provision.indexOf(serviceId) !== -1) {
+                        return;
+                    }
+                    done = Q.when(done, function() {
+                        return self.ensure(serviceId).then(function() {
+                            return self.deploy();
                         });
                     });
-                }
+                });
                 return done;
             });
         });

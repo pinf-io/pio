@@ -15,7 +15,8 @@
     "glob": "~3.2.9",
     "dirsum": "~0.1.1",
     "deepmerge": "~0.2.7",
-    "waitfor": "~0.1.3"
+    "waitfor": "~0.1.3",
+    "smi.cli": "~0.7.0"
   },
   "config": {
       "pio.deploy.converter": {
