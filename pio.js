@@ -24,6 +24,8 @@ const GLOB = require("glob");
 const SMI = require("smi.cli");
 
 
+
+
 var PIO = module.exports = function(seedPath) {
     var self = this;
 
@@ -327,8 +329,10 @@ var PIO = module.exports = function(seedPath) {
                     self._configPath = path;
                     self._rtConfigPath = path.replace(/\.json$/, ".rt.json");
 
+                    if (!self._config) return Q.resolve(null);
+
                     function mergeCatalogDescriptors() {
-                        if (!self._config.upstream) {
+                        if (!self._config || !self._config.upstream) {
                             return Q.resolve();
                         }
                         return ensureUpstream().then(function(catalogDescriptor) {
@@ -342,27 +346,34 @@ var PIO = module.exports = function(seedPath) {
 
                     return mergeCatalogDescriptors().then(function() {
                         var services = {};
-                        var basePath = PATH.join(self._configPath, "..", self._config.config["pio"].servicesPath);
-                        return Q.denodeify(GLOB)("*/*", {
-                            cwd: basePath
-                        }).then(function(files) {
-                            files.forEach(function(filepath) {
-                                services[filepath.split("/").pop()] = PATH.join(basePath, filepath);
-                            });
-                            basePath = PATH.join(self._configPath, "..", "_upstream");
+
+                        function locateServices() {
+                            if (!self._config) return Q.resolve(null);
+                            var basePath = PATH.join(self._configPath, "..", self._config.config["pio"].servicesPath);
                             return Q.denodeify(GLOB)("*/*", {
                                 cwd: basePath
                             }).then(function(files) {
                                 files.forEach(function(filepath) {
                                     services[filepath.split("/").pop()] = PATH.join(basePath, filepath);
                                 });
-                                self._locatedServices = services;
-                                return;
+                                basePath = PATH.join(self._configPath, "..", "_upstream");
+                                return Q.denodeify(GLOB)("*/*", {
+                                    cwd: basePath
+                                }).then(function(files) {
+                                    files.forEach(function(filepath) {
+                                        services[filepath.split("/").pop()] = PATH.join(basePath, filepath);
+                                    });
+                                    self._locatedServices = services;
+                                    return;
+                                });
                             });
-                        }).then(function() {
+                        }
+
+                        return locateServices().then(function() {
 
                             function unlock() {
                                 if (
+                                    !self._config ||
                                     !self._config.config ||
                                     !self._config.config["pio.cli.local"] ||
                                     !self._config.config["pio.cli.local"].plugins ||
@@ -451,6 +462,8 @@ var PIO = module.exports = function(seedPath) {
                                         configStr = configStr.replace(/\{\{env\.DNSIMPLE_TOKEN\}\}/g, process.env.DNSIMPLE_TOKEN);
                                         configStr = configStr.replace(/\{\{env\.AWS_ACCESS_KEY\}\}/g, process.env.AWS_ACCESS_KEY);
                                         configStr = configStr.replace(/\{\{env\.AWS_SECRET_KEY\}\}/g, process.env.AWS_SECRET_KEY);
+                                        configStr = configStr.replace(/\{\{env\.LEGACY_AWS_ACCESS_KEY\}\}/g, process.env.LEGACY_AWS_ACCESS_KEY);
+                                        configStr = configStr.replace(/\{\{env\.LEGACY_AWS_SECRET_KEY\}\}/g, process.env.LEGACY_AWS_SECRET_KEY);
                                         configStr = configStr.replace(/\{\{env\.DIGIO_CLIENT_ID\}\}/g, process.env.DIGIO_CLIENT_ID);
                                         configStr = configStr.replace(/\{\{env\.DIGIO_API_KEY\}\}/g, process.env.DIGIO_API_KEY);
                                         self._config.config = JSON.parse(configStr);
@@ -569,7 +582,7 @@ var PIO = module.exports = function(seedPath) {
                             return callback(null);
                         }).fail(callback);
                     }
-                    return FS.exists(PATH.join(seedPath, "pio.json"), function(exists) {
+                    return FS.exists(PATH.join(seedPath, ".pio.json"), function(exists) {
                         if (exists) {
                             return loadConfig(PATH.join(seedPath, ".pio.json")).then(function() {
                                 return callback(null);
@@ -716,6 +729,73 @@ function callPlugins(pio, method, state, options) {
     });
 }
 
+
+function locateServices(pio) {
+    var services = {};
+    var serviceGroups = {};
+    for (var serviceGroup in pio._config.services) {
+        Object.keys(pio._config.services[serviceGroup]).forEach(function(serviceId) {
+            if (pio._config.services[serviceGroup][serviceId] === null) {
+                return;
+            }
+            if (serviceGroups[serviceId]) {
+                throw new Error("Cannot redeclare service '" + serviceId + "' in group '" + serviceId + "'. It is already declared in '" + serviceGroups[serviceId] + "'");
+            }
+            serviceGroups[serviceId] = serviceGroup;
+        });
+    }
+    return Q.denodeify(function(callback) {
+        var waitfor = WAITFOR.parallel(function(err) {
+            if (err) return callback(err);
+            return callback(null, services);
+        })
+        for (var serviceId in pio._locatedServices) {
+            if (serviceGroups[serviceId]) {
+                services[serviceId] = {
+                    group: serviceGroups[serviceId],
+                    path: pio._locatedServices[serviceId],
+                    descriptor: DEEPCOPY(pio._config.services[serviceGroups[serviceId]][serviceId])
+                };
+                if (typeof services[serviceId].descriptor.enabled === "undefined") {
+                    services[serviceId].enabled = true;
+                } else {
+                    services[serviceId].enabled = services[serviceId].descriptor.enabled;
+                }
+                waitfor(serviceId, function(serviceId, callback) {
+
+                    return SMI.readDescriptor(PATH.join(pio._locatedServices[serviceId], "package.json"), {
+                        basePath: pio._locatedServices[serviceId]
+                    }, function(err, _descriptor) {
+                        if (err) return callback(err);
+                        if (!_descriptor) return callback(null);
+
+                        services[serviceId].descriptor = DEEPMERGE(services[serviceId].descriptor, _descriptor);
+
+                        return callback(null);
+                    });
+                });
+            }
+        }
+        return waitfor();
+    })();
+}
+
+PIO.prototype.locate = function(serviceSelector) {
+    var self = this;
+    return Q.denodeify(function(callback) {
+        return SMI.locateUpstreamPackages(self._config, function(err, packages) {
+            if (err) return callback(err);
+            if (!serviceSelector) {
+                return callback(null, packages);
+            }
+            if (!packages[serviceSelector]) {
+                return callback(null, null);
+            }
+            return callback(null, packages[serviceSelector]);
+        });
+    })();
+}
+
 PIO.prototype.ensure = function(serviceSelector, options) {
     var self = this;
     if (self._state && self._state["pio.cli.local"].serviceSelector === serviceSelector) {
@@ -724,78 +804,55 @@ PIO.prototype.ensure = function(serviceSelector, options) {
     options = options || {
         force: (self._state && self._state["pio.cli.local"] && self._state["pio.cli.local"].force) || false
     }
-    var services = {};
-    var serviceGroups = {};
-    for (var serviceGroup in self._config.services) {
-        Object.keys(self._config.services[serviceGroup]).forEach(function(serviceId) {
-            if (self._config.services[serviceGroup][serviceId] === null) {
-                return;
+    return locateServices(self).then(function(services) {
+        return callPlugins(self, "ensure", {
+            "pio.cli.local": {
+                serviceSelector: serviceSelector || null,
+                force: options.force || false,
+                debug: options.debug || false,
+                verbose: options.verbose || false
+            },
+            "pio": DEEPMERGE(DEEPCOPY(self._config.config["pio"]), {}),
+            "pio.vm": DEEPCOPY(self._config.config["pio.vm"]),
+            "pio.services": {
+                "services": services
             }
-            if (serviceGroups[serviceId]) {
-                throw new Error("Cannot redeclare service '" + serviceId + "' in group '" + serviceId + "'. It is already declared in '" + serviceConfig[serviceId] + "'");
-            }
-            serviceGroups[serviceId] = serviceGroup;
-        });
-    }
-    for (var serviceId in self._locatedServices) {
-        if (serviceGroups[serviceId]) {
-            services[serviceId] = {
-                group: serviceGroups[serviceId],
-                path: self._locatedServices[serviceId],
-                descriptor: DEEPCOPY(self._config.services[serviceGroups[serviceId]][serviceId])
-            };
-            if (typeof services[serviceId].descriptor.enabled === "undefined") {
-                services[serviceId].enabled = true;
-            } else {
-                services[serviceId].enabled = services[serviceId].descriptor.enabled;
-            }
-        }
-    }
-    return callPlugins(self, "ensure", {
-        "pio.cli.local": {
-            serviceSelector: serviceSelector || null,
-            force: options.force || false
-        },
-        "pio": DEEPMERGE(DEEPCOPY(self._config.config["pio"]), {}),
-        "pio.vm": DEEPCOPY(self._config.config["pio.vm"]),
-        "pio.services": {
-            "services": services
-        }
-    }, options).then(function(state) {
+        }, options).then(function(state) {
 
-        // We can proceed if everything is ready or we are not waiting
-        // on required services.
-        var repeat = false;
-        for (var alias in state) {
-            if (typeof state[alias].status !== "undefined") {
-                if (state[alias].status === "repeat") {
-                    console.log(("Service is asking for ensure to repeat: " + JSON.stringify({
-                        "alias": alias,
-                        "state": state[alias]
-                    }, null, 4)).cyan);
-                    repeat = true;
-                } else
-                if (state[alias].status !== "ready" &&
-                    (
-                        state[alias].required === true ||
-                        state[alias].required !== false
-                    )
-                ) {
-                    throw ("Service not ready: " + JSON.stringify({
-                        "alias": alias,
-                        "state": state[alias]
-                    }, null, 4));
+            // We can proceed if everything is ready or we are not waiting
+            // on required services.
+            var repeat = false;
+            for (var alias in state) {
+                if (typeof state[alias].status !== "undefined") {
+                    if (state[alias].status === "repeat") {
+                        console.log(("Service is asking for ensure to repeat: " + JSON.stringify({
+                            "alias": alias,
+                            "state": state[alias]
+                        }, null, 4)).cyan);
+                        repeat = true;
+                    } else
+                    if (state[alias].status !== "ready" &&
+                        (
+                            state[alias].required === true ||
+                            state[alias].required !== false
+                        )
+                    ) {
+                        throw ("Service not ready: " + JSON.stringify({
+                            "alias": alias,
+                            "state": state[alias]
+                        }, null, 4));
+                    }
                 }
             }
-        }
 
-        if (repeat) {
-            return self._load().then(function() {
-                return self.ensure(serviceSelector, options);
-            });
-        }
+            if (repeat) {
+                return self._load().then(function() {
+                    return self.ensure(serviceSelector, options);
+                });
+            }
 
-        self._state = state;
+            self._state = state;
+        });
     });
 }
 
@@ -1198,6 +1255,14 @@ PIO.prototype.publish = function() {
         console.log(("Publish of '" + self._state["pio.service"].id + "' done!").green);
 
         return state;
+    });
+}
+
+
+PIO.forPackage = function(basePath) {
+    var pio = new PIO(PATH.dirname(basePath));
+    return pio.ready().then(function() {
+        return pio;
     });
 }
 
