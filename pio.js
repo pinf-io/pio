@@ -876,7 +876,6 @@ PIO.prototype.list = function() {
 function repeat(worker, failIsGood) {
     function check() {
         function again() {
-            console.log("Warning: Attempt failed: " + err.stack);
             console.log("Waiting for 3 seconds and trying again ...");
             return Q.delay(3 * 1000).then(function() {
                 return check();
