@@ -769,7 +769,7 @@ function locateServices(pio) {
                         if (err) return callback(err);
                         if (!_descriptor) return callback(null);
 
-                        services[serviceId].descriptor = DEEPMERGE(services[serviceId].descriptor, _descriptor);
+                        services[serviceId].descriptor = DEEPMERGE(_descriptor, services[serviceId].descriptor);
 
                         return callback(null);
                     });
