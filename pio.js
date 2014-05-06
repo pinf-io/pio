@@ -576,6 +576,7 @@ var PIO = module.exports = function(seedPath) {
                         return callback(null);
                     }).fail(callback);
                 }
+                // TODO: We should be using meta data to resolve this path if we have some.
                 return FS.exists(PATH.join(seedPath, "pio.json"), function(exists) {
                     if (exists) {
                         return loadConfig(PATH.join(seedPath, "pio.json")).then(function() {
@@ -588,21 +589,30 @@ var PIO = module.exports = function(seedPath) {
                                 return callback(null);
                             }).fail(callback);
                         }
+                        return FS.exists(PATH.join(seedPath, "../.pio.json"), function(exists) {
+                            if (exists) {
+                                return loadConfig(PATH.join(seedPath, "../.pio.json")).then(function() {
+                                    return callback(null);
+                                }).fail(callback);
+                            }
 
-                        // Locate parent config and select service assuming we are loading config
-                        // for a dev package.
-                        return loadConfig(PATH.join(seedPath, "../../../pio.json")).then(function() {
+                            // Locate parent config and select service assuming we are loading config
+                            // for a dev package.
+                            function loadDevConfig(path, selector, callback) {
+                                return loadConfig(path).then(function() {
+                                    self._config.config["pio.cli.local"].plugins = {
+                                        "ensure": [
+                                            "service:pio.service/module:pio.cli.local.ensure.plugin"
+                                        ]
+                                    };
+                                    return self.ensure(selector);
+                                }).then(function() {
+                                    return callback(null);
+                                }).fail(callback);
+                            }
 
-                            self._config.config["pio.cli.local"].plugins = {
-                                "ensure": [
-                                    "service:pio.service/module:pio.cli.local.ensure.plugin"
-                                ]
-                            };
-
-                            return self.ensure(PATH.basename(seedPath));
-                        }).then(function() {
-                            return callback(null);
-                        }).fail(callback);
+                            return loadDevConfig(PATH.join(seedPath, "../../../pio.json"), PATH.basename(seedPath), callback);
+                        });
                     });
                 });
             })();
@@ -1166,7 +1176,7 @@ PIO.prototype.restart = function() {
     });
 }
 
-PIO.prototype.test = function() {
+PIO.prototype.test = function(options) {
     var self = this;
 
 
@@ -1201,6 +1211,38 @@ PIO.prototype.test = function() {
     if (self._state["pio.service"].enabled === false) {
         console.log(("Skip test for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
         return Q.resolve(null);
+    }
+
+    if (options.local) {
+        // TODO: Instead of checking for local option here the declared plugin should already be swapped
+        //       out so we don't need to do anything here.
+        // TODO: Detect how tests should be run and don't always assume npm.
+
+        function npmTest(callback) {
+            var basePath = self._state["pio.service"].originalPath;
+            console.log(("Calling `npm test` for: " + basePath).magenta);
+            var proc = SPAWN("npm", [
+                "test"
+            ], {
+                cwd: basePath
+            });
+            proc.stdout.on('data', function (data) {
+                process.stdout.write(data);
+            });
+            proc.stderr.on('data', function (data) {
+                process.stderr.write(data);
+            });
+            return proc.on('close', function (code) {
+                if (code !== 0) {
+                    console.error("ERROR: `npm test` exited with code '" + code + "'");
+                    return callback(new Error("`npm test` script exited with code '" + code + "'"));
+                }
+                console.log(("`npm test` for '" + basePath + "' done!").green);
+                return callback(null, {success: true});
+            });
+        }
+
+        return Q.denodeify(npmTest)();
     }
 
     return callPlugins(self, "test", self._state).then(function(state) {
@@ -1259,7 +1301,10 @@ PIO.prototype.publish = function() {
 
 
 PIO.forPackage = function(basePath) {
-    var pio = new PIO(PATH.dirname(basePath));
+    if (PATH.basename(basePath) === "live") {
+        basePath = PATH.dirname(basePath);
+    }
+    var pio = new PIO(basePath);
     return pio.ready().then(function() {
         return pio;
     });
