@@ -14,6 +14,7 @@ const CRYPTO = require("crypto");
 const REQUEST = require("request");
 const RSYNC = require("./lib/rsync");
 const SSH = require("./lib/ssh");
+const OPENSSL = require("./lib/openssl");
 const SPAWN = require("child_process").spawn;
 const DIRSUM = require("dirsum");
 const FSWALKER = require("./lib/fswalker");
@@ -429,11 +430,20 @@ var PIO = module.exports = function(seedPath) {
                                     ASSERT.equal(typeof self._config.config.pio.hostname, "string", "'config.pio.hostname' must be set in: " + self._configPath);
                                     return;
                                 }
-                                path = PATH.join(self._configPath, "..", "pio." + self._config.config.pio.profile + ".json");
-            //                    console.log("Using profile:", path);
-                                return Q.denodeify(FS.readJson)(path).then(function(profile) {
-                                    self._profilePath = path;
-                                    self._config = DEEPMERGE(self._config, profile);
+
+                                function loadProfile() {
+                                    if (!self._config.config.pio.profile) {
+                                        return Q.resolve();
+                                    }
+                                    var path = PATH.join(self._configPath, "..", "pio." + self._config.config.pio.profile + ".json");
+//                                  console.log("Using profile:", path);
+                                    return Q.denodeify(FS.readJson)(path).then(function(profile) {
+                                        self._profilePath = path;
+                                        self._config = DEEPMERGE(self._config, profile);
+                                    });
+                                }
+
+                                return loadProfile().then(function() {
 
                                     function loadRuntimeConfig() {
                                         return Q.denodeify(function(callback) {
@@ -530,21 +540,34 @@ var PIO = module.exports = function(seedPath) {
 
                                         function getPublicKey(verify) {
                                             var deferred = Q.defer();
-                                            var pubKeyPath = c.keyPath + ".pub";
-                                            FS.exists(pubKeyPath, function(exists) {
-                                                if (exists) {
-                                                    return FS.readFile(pubKeyPath, "utf8", function(err, data) {
-                                                        if (err) return deferred.reject(err);
-                                                        return deferred.resolve(data.match(/^(\S+\s+\S+)(\s+\S+)?\n?$/)[1]);
+                                            FS.exists(c.keyPath, function(keyExists) {
+                                                if (keyExists) {
+                                                    var pubKeyPath = c.keyPath + ".pub";
+                                                    return FS.exists(pubKeyPath, function(exists) {
+                                                        if (exists) {
+                                                            return FS.readFile(pubKeyPath, "utf8", function(err, data) {
+                                                                if (err) return deferred.reject(err);
+                                                                return deferred.resolve(data.match(/^(\S+\s+\S+)(\s+\S+)?\n?$/)[1]);
+                                                            });
+                                                        }
+                                                        if (verify === "public") {
+                                                            return deferred.reject(new Error("Still no public key after export!"));
+                                                        }
+                                                        console.log(("Generating public key from private key '" + c.keyPath + "' and store at: " + pubKeyPath).magenta);
+                                                        return SSH.exportPublicKeyFromPrivateKey(c.keyPath, pubKeyPath).then(function() {
+                                                            return getPublicKey("public");
+                                                        }).then(deferred.resolve).fail(deferred.reject);
                                                     });
+                                                } else {
+                                                    if (verify === "private") {
+                                                        return deferred.reject(new Error("Still no private key after trying to create it!"));
+                                                    }
+                                                    return OPENSSL.generateKeys({
+                                                        path: c.keyPath
+                                                    }).then(function() {
+                                                        return getPublicKey("private");
+                                                    }).then(deferred.resolve).fail(deferred.reject);
                                                 }
-                                                if (verify) {
-                                                    return deferred.reject(new Error("Still no public key after export!"));
-                                                }
-                                                console.log(("Generating public key from private key '" + c.keyPath + "' and store at: " + pubKeyPath).magenta);
-                                                return SSH.exportPublicKeyFromPrivateKey(c.keyPath, pubKeyPath).then(function() {
-                                                    return getPublicKey(true);
-                                                }).then(deferred.resolve).fail(deferred.reject);
                                             });
                                             return deferred.promise;
                                         }
