@@ -534,7 +534,7 @@ var PIO = module.exports = function(seedPath) {
                                         var deploySegment = c.instanceIdSegmentPrefix + c.instanceId.substring(0, c.idSegmentLength);
                                         c.instanceId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, deploySegment, c.instanceId.substring(c.idSegmentLength)].join("_");
 
-                                        c.hostname = [c.namespace, "-", deploySegment, ".", c.domain].join("");
+                                        c.hostname = [c.namespace, "-", deploySegment, "-", c.instance, ".", c.domain].join("");
 
                                         c.keyPath = c.keyPath.replace(/^~\//, ((process.env.HOME || "/home/ubuntu") + "/"));
 
@@ -813,6 +813,80 @@ function locateServices(pio) {
     })();
 }
 
+// @source https://github.com/c9/architect/blob/567b7c034d7644a2cc0405817493b451b01975fa/architect.js#L332
+function orderServices(services) {
+    var plugins = [];
+    for (var serviceId in services) {
+        plugins.push({
+            packagePath: services[serviceId].path,
+            provides: [ serviceId ],
+            consumes: (services[serviceId].descriptor && services[serviceId].descriptor.depends) || [],
+            id: serviceId
+        });
+    }
+    var resolved = {
+        hub: true
+    };
+    var changed = true;
+    var sorted = [];
+
+    while(plugins.length && changed) {
+        changed = false;
+
+        plugins.concat().forEach(function(plugin) {
+            var consumes = plugin.consumes.concat();
+
+            var resolvedAll = true;
+            for (var i=0; i<consumes.length; i++) {
+                var service = consumes[i];
+                if (!resolved[service]) {
+                    resolvedAll = false;
+                } else {
+                    plugin.consumes.splice(plugin.consumes.indexOf(service), 1);
+                }
+            }
+
+            if (!resolvedAll)
+                return;
+
+            plugins.splice(plugins.indexOf(plugin), 1);
+            plugin.provides.forEach(function(service) {
+                resolved[service] = true;
+            });
+            sorted.push(plugin.id);
+            changed = true;
+        });
+    }
+
+    if (plugins.length) {
+        var unresolved = {};
+        plugins.forEach(function(plugin) {
+            delete plugin.config;
+            plugin.consumes.forEach(function(name) {
+                if (unresolved[name] == false)
+                    return;
+                if (!unresolved[name])
+                    unresolved[name] = [];
+                unresolved[name].push(plugin.packagePath);
+            });
+            plugin.provides.forEach(function(name) {
+                unresolved[name] = false;
+            });
+        });
+
+        Object.keys(unresolved).forEach(function(name) {
+            if (unresolved[name] == false)
+                delete unresolved[name];
+        });
+
+        console.error("Could not resolve dependencies of these plugins:", plugins);
+        console.error("Resolved services:", Object.keys(resolved));
+        console.error("Missing services:", unresolved);
+        throw new Error("Could not resolve dependencies");
+    }
+    return sorted;
+}
+
 PIO.prototype.locate = function(serviceSelector) {
     var self = this;
     return Q.denodeify(function(callback) {
@@ -848,7 +922,8 @@ PIO.prototype.ensure = function(serviceSelector, options) {
             "pio": DEEPMERGE(DEEPCOPY(self._config.config["pio"]), {}),
             "pio.vm": DEEPCOPY(self._config.config["pio.vm"]),
             "pio.services": {
-                "services": services
+                "services": services,
+                "order": orderServices(services)
             }
         }, options).then(function(state) {
 
@@ -893,7 +968,7 @@ PIO.prototype.list = function() {
     var self = this;
     return self._ready.then(function() {
         var services = [];
-        for (var serviceId in self._state["pio.services"].services) {
+        self._state["pio.services"].order.forEach(function(serviceId) {
             services.push({
                 group: self._state["pio.services"].services[serviceId].group,
                 id: serviceId,
@@ -901,7 +976,7 @@ PIO.prototype.list = function() {
                 pathReal: FS.realpathSync(self._state["pio.services"].services[serviceId].path),
                 enabled: self._state["pio.services"].services[serviceId].enabled
             });
-        }
+        });
         return services;
     });
 }
@@ -934,47 +1009,24 @@ PIO.prototype.deploy = function() {
 
     if (!self._state["pio.cli.local"].serviceSelector) {
         // Deploy all services.
-
         return self._ready.then(function() {
+            console.log("Deploying services sequentially according to 'depends' order:".cyan);
             var done = Q.resolve();
-            if (self._config.config["pio.vm"].provision) {
-                console.log("Deploying services sequentially according to 'boot' order:".cyan);
-                self._config.config["pio.vm"].provision.forEach(function(serviceId) {
-                    done = Q.when(done, function() {
-                        return self.ensure(serviceId).then(function() {
-                            return self.deploy().then(function() {
-                                return self._state["pio.deploy"]._ensure().then(function(_response) {
-                                    if (_response.status === "ready") {
-                                        console.log("Switching to using dnode transport where possible!".green);
-                                    }
-                                    return;
-                                });
+            self._state["pio.services"].order.forEach(function(serviceId) {
+                done = Q.when(done, function() {
+                    return self.ensure(serviceId).then(function() {
+                        return self.deploy().then(function() {
+                            return self._state["pio.deploy"]._ensure().then(function(_response) {
+                                if (_response.status === "ready") {
+                                    console.log("Switching to using dnode transport where possible!".green);
+                                }
+                                return;
                             });
                         });
                     });
                 });
-            }
-            return Q.when(done, function() {
-
-                // TODO: Deploy in parallel by default if nothing has changed.
-                console.log("Deploying remaining services sequentially:".cyan);
-
-                var done = Q.resolve();
-                Object.keys(self._state["pio.services"].services).forEach(function(serviceId) {
-                    if (
-                        self._config.config["pio.vm"].provision &&
-                        self._config.config["pio.vm"].provision.indexOf(serviceId) !== -1
-                    ) {
-                        return;
-                    }
-                    done = Q.when(done, function() {
-                        return self.ensure(serviceId).then(function() {
-                            return self.deploy();
-                        });
-                    });
-                });
-                return done;
             });
+            return done;
         });
     }
 
