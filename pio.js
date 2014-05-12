@@ -496,6 +496,8 @@ var PIO = module.exports = function(seedPath) {
 
                                         var c = self._config.config.pio;
 
+                                        c.instance = c.instance || "0";
+
                                         c.idSegmentLength = c.idSegmentLength || 4;
                                         c.epochIdSegmentPrefix = c.epochIdSegmentPrefix || "e";
                                         c.seedIdSegmentPrefix = c.seedIdSegmentPrefix || "s";
