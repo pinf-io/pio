@@ -807,6 +807,8 @@ function locateServices(pio) {
                         services[serviceId].descriptor = DEEPMERGE(_descriptor, services[serviceId].descriptor);
                         if (
                             serviceGroups[serviceId] &&
+                            pio._configOriginal &&
+                            pio._configOriginal.services &&
                             pio._configOriginal.services[serviceGroups[serviceId]] &&
                             pio._configOriginal.services[serviceGroups[serviceId]][serviceId]
                         ) {
