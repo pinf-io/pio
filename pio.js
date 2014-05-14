@@ -419,7 +419,7 @@ var PIO = module.exports = function(seedPath) {
                                 }
 
                                 if (/\/\.pio\.json$/.test(self._configPath)) {
-                                    console.log("Skip loading profile as we are using a consolidated pio descriptor (" + self._configPath + ").");
+                                    //console.log("Skip loading profile as we are using a consolidated pio descriptor (" + self._configPath + ").");
                                     verify();
                                     ASSERT.equal(typeof self._config.config.pio.epochId, "string", "'config.pio.epochId' must be set in: " + self._configPath);
                                     ASSERT.equal(typeof self._config.config.pio.seedId, "string", "'config.pio.seedId' must be set in: " + self._configPath);
@@ -805,6 +805,16 @@ function locateServices(pio) {
                         if (!_descriptor) return callback(null);
 
                         services[serviceId].descriptor = DEEPMERGE(_descriptor, services[serviceId].descriptor);
+                        if (
+                            serviceGroups[serviceId] &&
+                            pio._configOriginal.services[serviceGroups[serviceId]] &&
+                            pio._configOriginal.services[serviceGroups[serviceId]][serviceId]
+                        ) {
+                            services[serviceId].descriptor._raw = DEEPMERGE(_descriptor, pio._configOriginal.services[serviceGroups[serviceId]][serviceId]);
+                        } else {
+                            // TODO: This needs to come from the catalog instead of using the resolved info here!
+                            services[serviceId].descriptor._raw = DEEPMERGE(_descriptor, services[serviceId].descriptor);
+                        }
 
                         return callback(null);
                     });
