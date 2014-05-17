@@ -601,42 +601,74 @@ var PIO = module.exports = function(seedPath) {
                         return callback(null);
                     }).fail(callback);
                 }
-                // TODO: We should be using meta data to resolve this path if we have some.
-                return FS.exists(PATH.join(seedPath, "pio.json"), function(exists) {
-                    if (exists) {
-                        return loadConfig(PATH.join(seedPath, "pio.json")).then(function() {
+
+                function determineDescriptorPath(callback) {
+                    var packageDescriptorPath = PATH.join(seedPath, "package.json");
+                    return FS.exists(packageDescriptorPath, function(exists) {
+                        if (!exists) {
+                            return callback(null, null);
+                        }
+                        return FS.readJson(packageDescriptorPath, function(err, descriptor) {
+                            if (err) return callback(err);
+                            if (
+                                descriptor &&
+                                descriptor.config &&
+                                descriptor.config['pio'] &&
+                                descriptor.config['pio'].descriptorPath
+                            ) {
+                                return callback(null, PATH.join(seedPath, descriptor.config['pio'].descriptorPath));
+                            }
+                            return callback(null, null);
+                        });
+                    });
+                }
+
+                return determineDescriptorPath(function(err, descriptorPath) {
+                    if (err) return callback(err);
+
+                    if (descriptorPath) {
+                        return loadConfig(descriptorPath).then(function() {
                             return callback(null);
-                        }).fail(callback);
-                    }
-                    return FS.exists(PATH.join(seedPath, ".pio.json"), function(exists) {
+                        }).fail(callback);                        
+                    } 
+
+                    // TODO: We should be using meta data to resolve this path if we have some.
+                    return FS.exists(PATH.join(seedPath, "pio.json"), function(exists) {
                         if (exists) {
-                            return loadConfig(PATH.join(seedPath, ".pio.json")).then(function() {
+                            return loadConfig(PATH.join(seedPath, "pio.json")).then(function() {
                                 return callback(null);
                             }).fail(callback);
                         }
-                        return FS.exists(PATH.join(seedPath, "../.pio.json"), function(exists) {
+                        return FS.exists(PATH.join(seedPath, ".pio.json"), function(exists) {
                             if (exists) {
-                                return loadConfig(PATH.join(seedPath, "../.pio.json")).then(function() {
+                                return loadConfig(PATH.join(seedPath, ".pio.json")).then(function() {
                                     return callback(null);
                                 }).fail(callback);
                             }
+                            return FS.exists(PATH.join(seedPath, "../.pio.json"), function(exists) {
+                                if (exists) {
+                                    return loadConfig(PATH.join(seedPath, "../.pio.json")).then(function() {
+                                        return callback(null);
+                                    }).fail(callback);
+                                }
 
-                            // Locate parent config and select service assuming we are loading config
-                            // for a dev package.
-                            function loadDevConfig(path, selector, callback) {
-                                return loadConfig(path).then(function() {
-                                    self._config.config["pio.cli.local"].plugins = {
-                                        "ensure": [
-                                            "service:pio.service/module:pio.cli.local.ensure.plugin"
-                                        ]
-                                    };
-                                    return self.ensure(selector);
-                                }).then(function() {
-                                    return callback(null);
-                                }).fail(callback);
-                            }
+                                // Locate parent config and select service assuming we are loading config
+                                // for a dev package.
+                                function loadDevConfig(path, selector, callback) {
+                                    return loadConfig(path).then(function() {
+                                        self._config.config["pio.cli.local"].plugins = {
+                                            "ensure": [
+                                                "service:pio.service/module:pio.cli.local.ensure.plugin"
+                                            ]
+                                        };
+                                        return self.ensure(selector);
+                                    }).then(function() {
+                                        return callback(null);
+                                    }).fail(callback);
+                                }
 
-                            return loadDevConfig(PATH.join(seedPath, "../../../pio.json"), PATH.basename(seedPath), callback);
+                                return loadDevConfig(PATH.join(seedPath, "../../../pio.json"), PATH.basename(seedPath), callback);
+                            });
                         });
                     });
                 });
