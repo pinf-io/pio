@@ -458,6 +458,7 @@ var PIO = module.exports = function(seedPath) {
 
                                     return loadRuntimeConfig().then(function (runtimeConfig) {
 
+                                        // TODO: Inherit more runtime values to set defaults if available.
                                         if (runtimeConfig && runtimeConfig.config) {
                                             if (runtimeConfig.config["pio.vm"]) {
                                                 if (runtimeConfig.config["pio.vm"].ip) {
