@@ -302,6 +302,9 @@ var PIO = module.exports = function(seedPath) {
                                 }
 
                                 function loadProfile() {
+                                    return Q.resolve();
+/*
+NOTE: No longer used.                                    
                                     if (!self._config.config.pio.profile) {
                                         return Q.resolve();
                                     }
@@ -311,6 +314,7 @@ var PIO = module.exports = function(seedPath) {
                                         self._profilePath = path;
                                         self._config = DEEPMERGE(self._config, profile);
                                     });
+*/
                                 }
 
                                 return loadProfile().then(function() {
