@@ -371,7 +371,7 @@ var PIO = module.exports = function(seedPath) {
 
                                         c.instanceId = c.instanceId || self._makeInstanceId();
 
-                                        c.hostname = [c.namespace, "-", c.instanceId.substring(0, 7), "-", c.instance, ".", c.domain].join("");
+                                        c.hostname = [c.namespace, "-", "i" + c.instanceId.substring(0, 7), "-", c.instance, ".", c.domain].join("");
 
                                         c.keyPath = (
                                                         c.keyPath &&
