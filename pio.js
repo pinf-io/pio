@@ -42,187 +42,54 @@ var PIO = module.exports = function(seedPath) {
         UUID: UUID
     };
 
-    // A hash that is affected by changes in `PIO_SEED_SALT` and `PIO_SEED_KEY` only.
-    self._seedHash = function (parts) {
-        var shasum = CRYPTO.createHash("sha1");
-        if (self._config.config.pio.seedId) {
-            shasum.update([
-                "seed-hash",
-                self._config.config.pio.seedId
-            ].concat(parts).join(":"));
-        } else {
-            var ok = true;
-            if (!process.env.PIO_SEED_SALT) {
-                ok = false;
-                console.error(("'PIO_SEED_SALT' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!process.env.PIO_SEED_KEY) {
-                ok = false;
-                console.error(("'PIO_SEED_KEY' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!ok) {
-                throw true;
-            }            
-            shasum.update([
-                "seed-hash",
-                process.env.PIO_SEED_SALT,
-                process.env.PIO_SEED_KEY
-            ].concat(parts).join(":"));
-        }
-        return shasum.digest("hex");
-    }
 
-    // A hash that is affected by changes in `PIO_EPOCH_ID` only.
-    self._epochHash = function (parts) {
+    // A hash that is affected by all properties describing the specific instance
+    // we are interacting with as well as `PIO_SEED_SALT`, `PIO_SEED_KEY`, `PIO_USER_ID` and `PIO_USER_SECRET`.
+    // It is NOT tied to a specific VM (i.e. IP).
+    self._makeInstanceId = function () {
         var shasum = CRYPTO.createHash("sha1");
-        if (self._config.config.pio.epochId) {
-            shasum.update([
-                "user-hash",
-                self._config.config.pio.epochId
-            ].concat(parts).join(":"));
-        } else {
-            var ok = true;
-            if (!process.env.PIO_EPOCH_ID) {
-                ok = false;
-                console.error(("'PIO_EPOCH_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!ok) {
-                throw true;
-            }            
-            shasum.update([
-                "epoch-hash",
-                process.env.PIO_EPOCH_ID
-            ].concat(parts).join(":"));
+        var ok = true;
+        if (!process.env.PIO_SEED_SALT) {
+            ok = false;
+            console.error(("'PIO_SEED_SALT' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
         }
-        return shasum.digest("hex");
-    }
-
-    // A hash that is affected by changes in `PIO_EPOCH_ID` and `PIO_USER_ID` only.
-    self._userHash = function (parts) {
-        var shasum = CRYPTO.createHash("sha1");
-        if (self._config.config.pio.userId) {
-            shasum.update([
-                "user-hash",
-                self._config.config.pio.userId
-            ].concat(parts).join(":"));
-        } else {
-            var ok = true;
-            if (!process.env.PIO_EPOCH_ID) {
-                ok = false;
-                console.error(("'PIO_EPOCH_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!process.env.PIO_USER_ID) {
-                ok = false;
-                console.error(("'PIO_USER_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!ok) {
-                throw true;
-            }            
-            shasum.update([
-                "user-hash",
-                process.env.PIO_EPOCH_ID,
-                process.env.PIO_USER_ID
-            ].concat(parts).join(":"));
+        if (!process.env.PIO_SEED_KEY) {
+            ok = false;
+            console.error(("'PIO_SEED_KEY' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
         }
-        return shasum.digest("hex");
-    }
-
-    // A hash that is affected by changes in `PIO_EPOCH_ID`, `PIO_USER_ID` and `PIO_USER_SECRET` only.
-    self._userSecretHash = function (parts) {
-        var shasum = CRYPTO.createHash("sha1");
-        if (self._config.config.pio.userSecret) {
-            shasum.update([
-                "user-secret-hash",
-                self._config.config.pio.userSecret
-            ].concat(parts).join(":"));
-        } else {
-            var ok = true;
-            if (!process.env.PIO_EPOCH_ID) {
-                ok = false;
-                console.error(("'PIO_EPOCH_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!process.env.PIO_USER_ID) {
-                ok = false;
-                console.error(("'PIO_USER_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!process.env.PIO_USER_SECRET) {
-                ok = false;
-                console.error(("'PIO_USER_SECRET' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!ok) {
-                throw true;
-            }            
-            shasum.update([
-                "user-secret-hash",
-                process.env.PIO_EPOCH_ID,
-                process.env.PIO_USER_ID,
-                process.env.PIO_USER_SECRET
-            ].concat(parts).join(":"));
+        if (!process.env.PIO_USER_ID) {
+            ok = false;
+            console.error(("'PIO_USER_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
         }
-        return shasum.digest("hex");
-    }
-
-    // A hash that is affected by changes in `self._config.config.pio.namespace` only.
-    self._codebaseHash = function (parts) {
-        var shasum = CRYPTO.createHash("sha1");
-        if (self._config.config.pio.codebaseId) {
-            shasum.update([
-                "codebase-hash",
-                self._config.config.pio.codebaseId
-            ].concat(parts).join(":"));
-        } else {
-            shasum.update([
-                "codebase-hash",
-                self._config.config.pio.namespace
-            ].concat(parts).join(":"));
+        if (!process.env.PIO_USER_SECRET) {
+            ok = false;
+            console.error(("'PIO_USER_SECRET' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
         }
+        if (!ok) {
+            console.error(("You probably forgot to run 'source bin/activate.sh' if you have configured the instance already?").red);
+            throw true;
+        }            
+        shasum.update([
+            "instance-id",
+            process.env.PIO_SEED_SALT,
+            process.env.PIO_SEED_KEY,
+            process.env.PIO_USER_ID,
+            process.env.PIO_USER_SECRET,
+            self._config.config.pio.domain,
+            self._config.config.pio.namespace
+        ].join(":"));
         return shasum.digest("hex");
     }
 
     // A hash that is affected by all properties describing the specific instance
     // we are interacting with as well as `PIO_SEED_SALT`, `PIO_SEED_KEY`, `PIO_USER_ID` and `PIO_USER_SECRET`.
-    // It is not tied to a specific VM (i.e. IP).
+    // It is NOT tied to a specific VM (i.e. IP).
     self._instanceHash = function (parts) {
         var shasum = CRYPTO.createHash("sha1");
-        if (self._config.config.pio.instanceId) {
-            shasum.update([
-                "instance-hash",
-                self._config.config.pio.instanceId,
-                self._config.config.pio.domain,
-                self._config.config.pio.namespace,
-                self._config.config["pio.vm"].ip
-            ].concat(parts).join(":"));
-        } else {
-            var ok = true;
-            if (!process.env.PIO_SEED_SALT) {
-                ok = false;
-                console.error(("'PIO_SEED_SALT' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!process.env.PIO_SEED_KEY) {
-                ok = false;
-                console.error(("'PIO_SEED_KEY' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!process.env.PIO_USER_ID) {
-                ok = false;
-                console.error(("'PIO_USER_ID' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!process.env.PIO_USER_SECRET) {
-                ok = false;
-                console.error(("'PIO_USER_SECRET' environment variable not set. Here is a new one in case you need one: " + UUID.v4()).red);
-            }
-            if (!ok) {
-                throw true;
-            }            
-            shasum.update([
-                "instance-hash",
-                process.env.PIO_SEED_SALT,
-                process.env.PIO_SEED_KEY,
-                process.env.PIO_USER_ID,
-                process.env.PIO_USER_SECRET,
-                self._config.config.pio.domain,
-                self._config.config.pio.namespace
-            ].concat(parts).join(":"));
-        }
+        shasum.update([
+            "instance-hash",
+            self._config.config.pio.instanceId
+        ].concat(parts).join(":"));
         return shasum.digest("hex");
     }
 
@@ -256,7 +123,8 @@ var PIO = module.exports = function(seedPath) {
                         var catalogDescriptorPath = PATH.join(catalogBasePath, catalogId + ".catalog.json");
                         return Q.denodeify(function(callback) {
                             return SMI.readDescriptor(catalogDescriptorPath, {
-                                basePath: PATH.join(self._configPath, "..")
+                                basePath: PATH.join(self._configPath, ".."),
+                                resolve: true
                             }, function(err, descriptor) {
                                 if (err) return callback(err);
                                 return callback(null, descriptor);
@@ -294,7 +162,8 @@ var PIO = module.exports = function(seedPath) {
                 function load(path) {
                     return Q.denodeify(function(callback) {
                         return SMI.readDescriptor(path, {
-                            basePath: PATH.join(path, "..")
+                            basePath: PATH.join(path, ".."),
+                            resolve: true
                         }, function(err, config) {
                             if (err) return callback(err);
 
@@ -307,7 +176,8 @@ var PIO = module.exports = function(seedPath) {
                                     return callback(null);
                                 }
                                 return SMI.readDescriptor(path, {
-                                    basePath: PATH.join(path, "..")
+                                    basePath: PATH.join(path, ".."),
+                                    resolve: true
                                 }, function(err, _config) {
                                     if (err) return callback(err);
                                     
@@ -421,11 +291,11 @@ var PIO = module.exports = function(seedPath) {
                                 if (/\/\.pio\.json$/.test(self._configPath)) {
                                     //console.log("Skip loading profile as we are using a consolidated pio descriptor (" + self._configPath + ").");
                                     verify();
-                                    ASSERT.equal(typeof self._config.config.pio.epochId, "string", "'config.pio.epochId' must be set in: " + self._configPath);
-                                    ASSERT.equal(typeof self._config.config.pio.seedId, "string", "'config.pio.seedId' must be set in: " + self._configPath);
-                                    ASSERT.equal(typeof self._config.config.pio.dataId, "string", "'config.pio.dataId' must be set in: " + self._configPath);
-                                    ASSERT.equal(typeof self._config.config.pio.codebaseId, "string", "'config.pio.codebaseId' must be set in: " + self._configPath);
-                                    ASSERT.equal(typeof self._config.config.pio.userId, "string", "'config.pio.userId' must be set in: " + self._configPath);
+//                                    ASSERT.equal(typeof self._config.config.pio.epochId, "string", "'config.pio.epochId' must be set in: " + self._configPath);
+//                                    ASSERT.equal(typeof self._config.config.pio.seedId, "string", "'config.pio.seedId' must be set in: " + self._configPath);
+//                                    ASSERT.equal(typeof self._config.config.pio.dataId, "string", "'config.pio.dataId' must be set in: " + self._configPath);
+//                                    ASSERT.equal(typeof self._config.config.pio.codebaseId, "string", "'config.pio.codebaseId' must be set in: " + self._configPath);
+//                                    ASSERT.equal(typeof self._config.config.pio.userId, "string", "'config.pio.userId' must be set in: " + self._configPath);
                                     ASSERT.equal(typeof self._config.config.pio.instanceId, "string", "'config.pio.instanceId' must be set in: " + self._configPath);
                                     ASSERT.equal(typeof self._config.config.pio.hostname, "string", "'config.pio.hostname' must be set in: " + self._configPath);
                                     return;
@@ -499,47 +369,15 @@ var PIO = module.exports = function(seedPath) {
 
                                         c.instance = c.instance || "0";
 
-                                        c.idSegmentLength = c.idSegmentLength || 4;
-                                        c.epochIdSegmentPrefix = c.epochIdSegmentPrefix || "e";
-                                        c.seedIdSegmentPrefix = c.seedIdSegmentPrefix || "s";
-                                        c.codebaseIdSegmentPrefix = c.codebaseIdSegmentPrefix || "c";
-                                        c.userIdSegmentPrefix = c.userIdSegmentPrefix || "u";
-                                        c.instanceIdSegmentPrefix = c.instanceIdSegmentPrefix || "i";
+                                        c.instanceId = c.instanceId || self._makeInstanceId();
 
-                                        // WARNING: DO NOT MODIFY THIS! IF MODIFIED IT WILL BREAK COMPATIBILITY WITH ADDRESSING
-                                        //          EXISTING DEPLOYMENTS!
+                                        c.hostname = [c.namespace, "-", c.instanceId.substring(0, 7), "-", c.instance, ".", c.domain].join("");
 
-                                        c.epochId = self._epochHash(["epoch-id"]);
-                                        var epochIdSegment = c.epochIdSegmentPrefix + c.epochId.substring(0, c.idSegmentLength);
-                                        c.epochId = [epochIdSegment, c.namespace, c.epochId.substring(c.idSegmentLength)].join("_");
-
-                                        c.seedId = self._seedHash(["seed-id", c.epochId]);
-                                        var seedIdSegment = c.seedIdSegmentPrefix + c.seedId.substring(0, c.idSegmentLength);
-                                        c.seedId = [epochIdSegment, c.namespace, seedIdSegment, c.seedId.substring(c.idSegmentLength)].join("_");
-
-                                        // Use this to derive data namespaces. They will survive multiple deployments.
-                                        c.dataId = [epochIdSegment, c.namespace, seedIdSegment, self._seedHash(["data-id", c.epochId, c.seedId])].join("_");
-
-                                        // Use this to derive orchestration and tooling namespaces. They are tied to the codebase uuid.
-                                        c.codebaseId = self._codebaseHash(["codebase-id", c.epochId, self._config.uuid]);
-                                        var codebaseSegment = c.codebaseIdSegmentPrefix + c.codebaseId.substring(0, c.idSegmentLength);
-                                        c.codebaseId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, c.codebaseId.substring(c.idSegmentLength)].join("_");
-
-                                        // Use this to derive data namespaces for users of the codebase that can create multiple instances.
-                                        c.userId = self._userHash(["user-id", c.epochId]);
-                                        c.userSecret = self._userSecretHash(["user-secret", c.epochId, c.userId]);
-                                        var userSegment = c.userIdSegmentPrefix + c.userId.substring(0, c.idSegmentLength);
-                                        c.userId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, c.userId.substring(c.idSegmentLength)].join("_");
-
-                                        // Use this to derive provisioning and runtime namespaces. They will change with every new IP.
-                                        c.instanceId = self._instanceHash(["deployment-id", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId]);
-                                        c.instanceSecret = self._instanceHash(["instance-secret", c.epochId, c.seedId, c.dataId, c.codebaseId, c.userId, c.instanceId]);
-                                        var deploySegment = c.instanceIdSegmentPrefix + c.instanceId.substring(0, c.idSegmentLength);
-                                        c.instanceId = [epochIdSegment, c.namespace, seedIdSegment, codebaseSegment, userSegment, deploySegment, c.instanceId.substring(c.idSegmentLength)].join("_");
-
-                                        c.hostname = [c.namespace, "-", deploySegment, "-", c.instance, ".", c.domain].join("");
-
-                                        c.keyPath = c.keyPath.replace(/^~\//, ((process.env.HOME || "/home/ubuntu") + "/"));
+                                        c.keyPath = (
+                                                        c.keyPath &&
+                                                        c.keyPath.replace(/^~\//, ((process.env.HOME || "/home/ubuntu") + "/"))
+                                                    ) ||
+                                                    ((process.env.HOME || "/home/ubuntu") + "/.ssh/" + c.hostname);
 
                                         function getPublicKey(verify) {
                                             var deferred = Q.defer();
@@ -832,7 +670,8 @@ function locateServices(pio) {
                 waitfor(serviceId, function(serviceId, callback) {
 
                     return SMI.readDescriptor(PATH.join(pio._locatedServices[serviceId], "package.json"), {
-                        basePath: pio._locatedServices[serviceId]
+                        basePath: pio._locatedServices[serviceId],
+                        resolve: true
                     }, function(err, _descriptor) {
                         if (err) return callback(err);
                         if (!_descriptor) return callback(null);
@@ -1082,7 +921,7 @@ PIO.prototype.deploy = function() {
         return Q.resolve(null);
     }
 
-    console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._config.config.pio.keyPath + " " + self._config.config["pio.vm"].user + "@" + self._config.config["pio.vm"].ip).bold);
+    console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._state["pio"].keyPath + " " + self._state["pio.vm"].user + "@" + self._state["pio.vm"].ip).bold);
 
     console.log(("Deploy '" + self._state["pio.service"].id + "' ...").magenta);
 
@@ -1115,7 +954,7 @@ PIO.prototype.deploy = function() {
 PIO.prototype.info = function() {
     var self = this;
 
-    console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._config.config.pio.keyPath + " " + self._config.config["pio.vm"].user + "@" + self._config.config["pio.vm"].ip).bold);
+    console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._state["pio"].keyPath + " " + self._state["pio.vm"].user + "@" + self._state["pio.vm"].ip).bold);
 
     if (!self._state["pio.cli.local"].serviceSelector) {
         return Q.resolve(self._config);
