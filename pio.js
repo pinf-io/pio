@@ -163,13 +163,24 @@ var PIO = module.exports = function(seedPath) {
                     return Q.denodeify(function(callback) {
                         return SMI.readDescriptor(path, {
                             basePath: PATH.join(path, ".."),
-                            resolve: true
+                            resolve: false
                         }, function(err, config) {
                             if (err) return callback(err);
 
-                            self._config = config;
-                            self._configOriginal = DEEPCOPY(self._config);
+                            self._configOriginal = config;
 
+                            return SMI.readDescriptor(path, {
+                                basePath: PATH.join(path, ".."),
+                                resolve: true
+                            }, function(err, config) {
+                                if (err) return callback(err);
+
+                                self._config = config;
+
+                                return callback(null);
+                            });
+
+/*
                             path = path.replace(/\.json$/, ".1.json");
                             return FS.exists(path, function(exists) {
                                 if (!exists) {
@@ -184,6 +195,7 @@ var PIO = module.exports = function(seedPath) {
                                     self._config = DEEPMERGE(self._config, _config);
                                     return callback(null);
                                 });
+*/
 /*
                                 return FS.readJson(path, function(err, _config) {
                                     if (err) return callback(err);
@@ -191,7 +203,7 @@ var PIO = module.exports = function(seedPath) {
                                     return callback(null);
                                 });
 */
-                            });
+//                            });
                         });
                     })();
                 }
@@ -211,7 +223,9 @@ var PIO = module.exports = function(seedPath) {
                             delete catalogDescriptor.uuid;
                             delete catalogDescriptor.revision;
                             delete catalogDescriptor.packages;
-                            self._config = DEEPMERGE(catalogDescriptor, self._config);
+                            for (var name in catalogDescriptor) {
+                                self._config[name] = DEEPMERGE(catalogDescriptor[name], self._config[name] || {});
+                            }
                         });
                     }
 
