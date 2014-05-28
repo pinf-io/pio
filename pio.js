@@ -420,14 +420,20 @@ NOTE: No longer used.
                                         return getPublicKey().then(function(publicKey) {
                                             c.keyPub = publicKey;
 
-                                            var configStr = JSON.stringify(self._config.config);
-                                            configStr = configStr.replace(/\{\{config\.pio\.hostname\}\}/g, c.hostname);
-                                            configStr = configStr.replace(/\{\{config\.pio\.domain\}\}/g, c.domain);
-                                            configStr = configStr.replace(/\{\{config\['pio\.vm'\]\.ip\}\}/g, self._config.config['pio.vm'].ip);
-                                            configStr = configStr.replace(/\{\{config.pio.namespace\}\}/g, self._config.config['pio'].namespace);
-                                            configStr = configStr.replace(/\{\{config\.pio\.keyPub\}\}/g, c.keyPub);
-                                            configStr = configStr.replace(/\{\{env.USER\}\}/g, process.env.USER);
-                                            self._config.config = JSON.parse(configStr);
+                                            function replaceWithinProperty(name) {
+                                                if (!self._config[name]) return;
+                                                var configStr = JSON.stringify(self._config[name]);
+                                                configStr = configStr.replace(/\{\{config\.pio\.hostname\}\}/g, c.hostname);
+                                                configStr = configStr.replace(/\{\{config\.pio\.domain\}\}/g, c.domain);
+                                                configStr = configStr.replace(/\{\{config\['pio\.vm'\]\.ip\}\}/g, self._config.config['pio.vm'].ip);
+                                                configStr = configStr.replace(/\{\{config.pio.namespace\}\}/g, self._config.config['pio'].namespace);
+                                                configStr = configStr.replace(/\{\{config\.pio\.keyPub\}\}/g, c.keyPub);
+                                                configStr = configStr.replace(/\{\{env.USER\}\}/g, process.env.USER);
+                                                self._config[name] = JSON.parse(configStr);
+                                            }
+
+                                            replaceWithinProperty("config");
+                                            replaceWithinProperty("services");
                                         });
                                     });
                                 });
