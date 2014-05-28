@@ -433,7 +433,6 @@ NOTE: No longer used.
                                             }
 
                                             replaceWithinProperty("config");
-                                            replaceWithinProperty("services");
                                         });
                                     });
                                 });
