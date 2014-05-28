@@ -375,7 +375,7 @@ NOTE: No longer used.
 
                                         c.instanceId = c.instanceId || self._makeInstanceId();
 
-                                        c.hostname = [c.namespace, "-", "i" + c.instanceId.substring(0, 7), "-", c.instance, ".", c.domain].join("");
+                                        c.hostname = c.hostname || [c.namespace, "-", "i" + c.instanceId.substring(0, 7), "-", c.instance, ".", c.domain].join("");
 
                                         c.keyPath = (
                                                         c.keyPath &&
