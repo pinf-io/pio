@@ -974,16 +974,14 @@ PIO.prototype.deploy = function() {
     });
 }
 
-PIO.prototype.info = function() {
+PIO.prototype.config = function() {
     var self = this;
-
-    console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._state["pio"].keyPath + " " + self._state["pio.vm"].user + "@" + self._state["pio.vm"].ip).bold);
 
     if (!self._state["pio.cli.local"].serviceSelector) {
         return Q.resolve(self._config);
     }
 
-    return self._state["pio.deploy"]._call("info", {
+    return self._state["pio.deploy"]._call("config", {
         servicePath: self._state["pio.service.deployment"].path
     }).then(function(res) {
         // NOTE: This format is going to change.
@@ -995,6 +993,86 @@ PIO.prototype.info = function() {
         };
     });
 }
+
+PIO.prototype.info = function() {
+    var self = this;
+
+    if (!self._state["pio.cli.local"].serviceSelector) {
+
+        // TODO: Encode IP into auth code so it is not usable by others.
+        var authCode = CRYPTO.createHash("sha1");
+        authCode.update(["auth-code", self._state.pio.instanceId, self._state.pio.instanceSecret].join(":"));
+
+        var env = Object.create({
+        });
+        env.PATH = process.env.PATH;
+        env.PIO_PROFILE_PATH = process.env.PIO_PROFILE_PATH;
+
+        var paths = Object.create({
+        });
+        paths.workspaceRoot = PATH.dirname(self._configPath);
+        paths.activationFile = PATH.join(paths.workspaceRoot, "../", PATH.basename(paths.workspaceRoot) + ".activate.sh");
+        paths.profileFile = process.env.PIO_PROFILE_PATH;
+        paths.configFile = self._configPath;
+        paths.keyPath = self._state["pio"].keyPath;
+
+        var variables = Object.create({
+            adminAuthCode: authCode.digest("hex")
+        });
+        variables.hostname = self._state["pio"].hostname;
+        variables.ip = self._config.config["pio.vm"].ip;
+
+        var commands = Object.create({
+            open: null
+        });
+        commands.login = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._state["pio"].keyPath + " " + self._state["pio.vm"].user + "@" + self._state["pio.vm"].ip
+        var urls = Object.create({
+            admin: null
+        });
+        urls.server = "http://" + variables.hostname;
+        if (
+            self._state['pio.dns'] &&
+            self._state['pio.dns'].status === "ready"
+        ) {
+            console.log("Using hostname '" + variables.hostname + "' to open admin as DNS is resolving to ip '" + variables.ip + "'.");
+            urls.__proto__.admin = 'http://' + variables.hostname + ':' + self._config.services["0-pio"]["pio.server"].env.PORT + '?auth-code=' + variables.adminAuthCode;
+        } else {
+            console.log("Using ip '" + variables.ip + "' to open admin as DNS hostname '" + variables.hostname + "' is NOT resolving.");
+            urls.__proto__.admin = 'http://' + variables.ip + ':' + self._config.services["0-pio"]["pio.server"].env.PORT + '?auth-code=' + variables.adminAuthCode;
+        }
+        commands.__proto__.open = 'open "' + urls.admin + '"';
+
+        // NOTE: This format is going to change.
+        return Q.resolve({
+            env: env,
+            paths: paths,
+            variables: variables,
+            commands: commands,
+            urls: urls
+        });
+    }
+
+    return Q.reject(new Error("'info' for service not yet implemented"));
+}
+
+PIO.prototype.open = function() {
+    var self = this;
+    return self.info().then(function(info) {
+        var deferred = Q.defer();
+        console.log(("Calling command: " + info.commands.open).magenta);
+        console.log("NOTE: If this does not exit it needs to be fixed for your OS.");
+        return EXEC(info.commands.open, function(err, stdout, stderr) {
+            if (err) {
+                console.error(stdout);
+                console.error(stderr);
+                return deferred.reject(err);
+            }
+            console.log("Browser opened!");
+            return deferred.resolve();
+        });
+    });
+}
+
 
 PIO.prototype.status = function() {
     var self = this;
