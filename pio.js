@@ -1361,6 +1361,19 @@ PIO.prototype.publish = function() {
     });
 }
 
+PIO.prototype.terminate = function(ip) {
+    var self = this;
+
+    self._state["pio.cli.local"].ip = ip;
+
+    return callPlugins(self, "terminate", self._state).then(function(state) {
+
+        console.log(("Termination of " + self._state["pio.vm"].ip + " (" + self._state["pio.vm"].hostname + ") done!").green);
+
+        return state;
+    });
+}
+
 
 PIO.forPackage = function(basePath) {
     if (PATH.basename(basePath) === "live") {
