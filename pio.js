@@ -211,6 +211,7 @@ var PIO = module.exports = function(seedPath) {
                 return load(path).then(function() {
                     self._configPath = path;
                     self._rtConfigPath = path.replace(/\.json$/, ".rt.json");
+                    self._workspaceProfilePath = process.env.PIO_PROFILE_PATH || null;
 
                     if (!self._config) return Q.resolve(null);
 
@@ -579,6 +580,22 @@ PIO.prototype._setRuntimeConfig = function(config) {
 */
 }
 
+PIO.prototype._updateWorkspaceProfile = function(changes) {
+    var self = this;
+    if (!self._workspaceProfilePath) {
+        console.log("Warning: Ignoring workspace profile update as 'self._workspaceProfilePath' not set!");
+        return Q.resolve();
+    }
+    return Q.denodeify(FS.readJson)(self._workspaceProfilePath).then(function(profile) {
+        // TODO: Display diff before writing. This could be implemented generically in an FS layer that shows diffs when overwiring JSON files.
+        profile = DEEPMERGE(profile, changes);
+        return Q.denodeify(FS.outputFile)(self._workspaceProfilePath, JSON.stringify(profile, null, 4)).then(function() {
+            return (self._ready = self._load());
+        });
+    });
+}
+
+
 
 function resolvePluginPath(pio, plugin) {
     var path = plugin;
@@ -821,7 +838,9 @@ PIO.prototype.ensure = function(serviceSelector, options) {
         force: (self._state && self._state["pio.cli.local"] && self._state["pio.cli.local"].force) || false
     }
     return locateServices(self).then(function(services) {
-        return callPlugins(self, "ensure", {
+        var state = options.state || {};
+        delete options.state;
+        state = DEEPMERGE({
             "pio.cli.local": {
                 serviceSelector: serviceSelector || null,
                 force: options.force || false,
@@ -834,7 +853,8 @@ PIO.prototype.ensure = function(serviceSelector, options) {
                 "services": services,
                 "order": orderServices(services)
             }
-        }, options).then(function(state) {
+        }, state);
+        return callPlugins(self, "ensure", state, options).then(function(state) {
 
             // We can proceed if everything is ready or we are not waiting
             // on required services.
@@ -1366,9 +1386,12 @@ PIO.prototype.terminate = function(ip) {
 
     self._state["pio.cli.local"].ip = ip;
 
+    // Cache values now as they may change after termination completes.
+    var message = "Termination of " + self._state["pio.vm"].ip + " (" + self._state["pio"].hostname + ") done!";
+
     return callPlugins(self, "terminate", self._state).then(function(state) {
 
-        console.log(("Termination of " + self._state["pio.vm"].ip + " (" + self._state["pio.vm"].hostname + ") done!").green);
+        console.log((message).green);
 
         return state;
     });
