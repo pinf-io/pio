@@ -855,20 +855,19 @@ PIO.prototype.ensure = function(serviceSelector, options) {
             }
         }, state);
         return callPlugins(self, "ensure", state, options).then(function(state) {
-
             // We can proceed if everything is ready or we are not waiting
             // on required services.
             var repeat = false;
             for (var alias in state) {
-                if (typeof state[alias].status !== "undefined") {
-                    if (state[alias].status === "repeat") {
+                if (typeof state[alias][".status"] !== "undefined") {
+                    if (state[alias][".status"] === "repeat") {
                         console.log(("Service is asking for ensure to repeat: " + JSON.stringify({
                             "alias": alias,
                             "state": state[alias]
                         }, null, 4)).cyan);
                         repeat = true;
                     } else
-                    if (state[alias].status !== "ready" &&
+                    if (state[alias][".status"] !== "ready" &&
                         (
                             state[alias].required === true ||
                             state[alias].required !== false
@@ -946,7 +945,7 @@ PIO.prototype.deploy = function() {
                     return self.ensure(serviceId).then(function() {
                         return self.deploy().then(function() {
                             return self._state["pio.deploy"]._ensure().then(function(_response) {
-                                if (_response.status === "ready") {
+                                if (_response[".status"] === "ready") {
                                     console.log("Switching to using dnode transport where possible!".green);
                                 }
                                 return;
@@ -975,7 +974,7 @@ PIO.prototype.deploy = function() {
         return state;
     }).then(function(state) {
 
-        if (state["pio.deploy"].status !== "done") {
+        if (state["pio.deploy"][".status"] !== "done") {
             console.log(("Skip confirming service is working using status call as we did not deploy service.").yellow);
             return;
         }
@@ -1052,7 +1051,7 @@ PIO.prototype.info = function() {
         urls.server = "http://" + variables.hostname;
         if (
             self._state['pio.dns'] &&
-            self._state['pio.dns'].status === "ready"
+            self._state['pio.dns'][".status"] === "ready"
         ) {
             console.log("Using hostname '" + variables.hostname + "' to open admin as DNS is resolving to ip '" + variables.ip + "'.");
             urls.__proto__.admin = 'http://' + variables.hostname + ':' + self._config.services["0-pio"]["pio.server"].env.PORT + '?auth-code=' + variables.adminAuthCode;
