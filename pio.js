@@ -1053,10 +1053,10 @@ PIO.prototype.info = function() {
             self._state['pio.dns'] &&
             self._state['pio.dns'][".status"] === "ready"
         ) {
-            console.log("Using hostname '" + variables.hostname + "' to open admin as DNS is resolving to ip '" + variables.ip + "'.");
+//            console.log("Using hostname '" + variables.hostname + "' to open admin as DNS is resolving to ip '" + variables.ip + "'.");
             urls.__proto__.admin = 'http://' + variables.hostname + ':' + self._config.services["0-pio"]["pio.server"].env.PORT + '?auth-code=' + variables.adminAuthCode;
         } else {
-            console.log("Using ip '" + variables.ip + "' to open admin as DNS hostname '" + variables.hostname + "' is NOT resolving.");
+//            console.log("Using ip '" + variables.ip + "' to open admin as DNS hostname '" + variables.hostname + "' is NOT resolving.");
             urls.__proto__.admin = 'http://' + variables.ip + ':' + self._config.services["0-pio"]["pio.server"].env.PORT + '?auth-code=' + variables.adminAuthCode;
         }
         commands.__proto__.open = 'open "' + urls.admin + '"';
