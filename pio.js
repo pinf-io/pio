@@ -939,6 +939,8 @@ function repeat(worker, failIsGood) {
 PIO.prototype.deploy = function(options) {
     var self = this;
 
+    options = options || {};
+
     if (!self._state["pio.cli.local"].serviceSelector) {
         // Deploy all services.
         return self._ready.then(function() {
