@@ -835,7 +835,10 @@ PIO.prototype.ensure = function(serviceSelector, options) {
         return Q.resolve(self._state);
     }
     options = options || {
-        force: (self._state && self._state["pio.cli.local"] && self._state["pio.cli.local"].force) || false
+        force: (self._state && self._state["pio.cli.local"] && self._state["pio.cli.local"].force) || false,
+        debug: (self._state && self._state["pio.cli.local"] && self._state["pio.cli.local"].debug) || false,
+        verbose: (self._state && self._state["pio.cli.local"] && (self._state["pio.cli.local"].verbose || self._state["pio.cli.local"].debug)) || false,
+        silent: (self._state && self._state["pio.cli.local"] && self._state["pio.cli.local"].silent) || false
     }
     return locateServices(self).then(function(services) {
         var state = options.state || {};
@@ -843,9 +846,10 @@ PIO.prototype.ensure = function(serviceSelector, options) {
         state = DEEPMERGE({
             "pio.cli.local": {
                 serviceSelector: serviceSelector || null,
-                force: options.force || false,
-                debug: options.debug || false,
-                verbose: options.verbose || false
+                force: options.force,
+                debug: options.debug,
+                verbose: options.verbose,
+                silent: options.silent
             },
             "pio": DEEPMERGE(DEEPCOPY(self._config.config["pio"]), {}),
             "pio.vm": DEEPCOPY(self._config.config["pio.vm"]),
@@ -932,21 +936,28 @@ function repeat(worker, failIsGood) {
     return Q.timeout(check(), 120 * 1000);
 }
 
-PIO.prototype.deploy = function() {
+PIO.prototype.deploy = function(options) {
     var self = this;
 
     if (!self._state["pio.cli.local"].serviceSelector) {
         // Deploy all services.
         return self._ready.then(function() {
-            console.log("Deploying services sequentially according to 'depends' order:".cyan);
+            if (self._state["pio.cli.local"].verbose) {
+                console.log("Deploying services sequentially according to 'depends' order:".cyan);
+            }
             var done = Q.resolve();
-            self._state["pio.services"].order.forEach(function(serviceId) {
+            self._state["pio.services"].order.forEach(function(serviceId, serviceIndex) {
                 done = Q.when(done, function() {
                     return self.ensure(serviceId).then(function() {
-                        return self.deploy().then(function() {
+                        return self.deploy({
+                            index: serviceIndex + 1,
+                            count: self._state["pio.services"].order.length
+                        }).then(function() {
                             return self._state["pio.deploy"]._ensure().then(function(_response) {
                                 if (_response[".status"] === "ready") {
-                                    console.log("Switching to using dnode transport where possible!".green);
+                                    if (self._state["pio.cli.local"].verbose) {
+                                        console.log("Switching to using dnode transport where possible!".green);
+                                    }
                                 }
                                 return;
                             });
@@ -959,23 +970,34 @@ PIO.prototype.deploy = function() {
     }
 
     if (self._state["pio.service"].enabled === false) {
-        console.log(("Skip deploy for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
+        if (self._state["pio.cli.local"].verbose) {
+            console.log(("Skip deploy for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
+        }
         return Q.resolve(null);
     }
 
-    console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._state["pio"].keyPath + " " + self._state["pio.vm"].user + "@" + self._state["pio.vm"].ip).bold);
+    if (self._state["pio.cli.local"].verbose) {
+        console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._state["pio"].keyPath + " " + self._state["pio.vm"].user + "@" + self._state["pio.vm"].ip).bold);
+    }
 
-    console.log(("Deploy '" + self._state["pio.service"].id + "' ...").magenta);
+    var optionalMessage = "";
+    if (options.index) {
+        optionalMessage = " (" + options.index + "/" + options.count + ")";
+    }
+    console.log(("[pio] ensure SYNCED".bold + " " + self._state["pio.service"].id + optionalMessage).cyan);
 
     return callPlugins(self, "deploy", self._state).then(function(state) {
 
-        console.log(("Deploy '" + self._state["pio.service"].id + "' done!").green);
+        if (state["pio.cli.local"].verbose) {
+            console.log(("Deploy '" + self._state["pio.service"].id + "' done!").green);
+        }
 
         return state;
     }).then(function(state) {
-
         if (state["pio.deploy"][".status"] !== "done") {
-            console.log(("Skip confirming service is working using status call as we did not deploy service.").yellow);
+            if (state["pio.cli.local"].verbose) {
+                console.log(("Skip confirming service is working using status call as we did not deploy service.").yellow);
+            }
             return;
         }
 
