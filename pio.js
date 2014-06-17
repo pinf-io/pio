@@ -1313,7 +1313,7 @@ PIO.prototype.test = function(options) {
         });
     }
 
-    if (self._state["pio.service"].enabled === false) {
+    if (self._state["pio.service"].enabled === false && !(self._state["pio.cli.local"].serviceSelector && options.local)) {
         console.log(("Skip test for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
         return Q.resolve(null);
     }
