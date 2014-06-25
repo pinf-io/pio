@@ -144,7 +144,7 @@ var PIO = module.exports = function(seedPath) {
                     Object.keys(self._config.upstream.catalogs).forEach(function(alias) {
                         done = Q.when(done, function() {
                             return ensureCatalog(alias, self._config.upstream.catalogs[alias]).then(function(catalogDescriptor) {
-                                combinedDescriptor = DEEPMERGE(combinedDescriptor, catalogDescriptor);
+                                combinedDescriptor = DEEPMERGE(combinedDescriptor, catalogDescriptor || {});
                             });
                         });
                     });
@@ -863,7 +863,11 @@ PIO.prototype.ensure = function(serviceSelector, options) {
             // on required services.
             var repeat = false;
             for (var alias in state) {
-                if (typeof state[alias][".status"] !== "undefined") {
+                if (
+                    state[alias] &&
+                    typeof state[alias] === "object" &&
+                    typeof state[alias][".status"] !== "undefined"
+                ) {
                     if (state[alias][".status"] === "repeat") {
                         console.log(("Service is asking for ensure to repeat: " + JSON.stringify({
                             "alias": alias,
@@ -1347,7 +1351,18 @@ PIO.prototype.test = function(options) {
             });
         }
 
-        return Q.denodeify(npmTest)();
+        function runTestCycle() {
+            return Q.denodeify(npmTest)().fail(function (err) {
+                if (!options.cycle) throw err;
+                console.error(("Ignoring error due to cycle: " + err.stack).red);
+            }).then(function() {
+                if (!options.cycle) return;
+                console.log("Running tests again in '" + options.cycle + "' seconds ...");
+                return Q.delay(options.cycle * 1000).then(runTestCycle);
+            });
+        }
+
+        return runTestCycle();
     }
 
     return callPlugins(self, "test", self._state).then(function(state) {
