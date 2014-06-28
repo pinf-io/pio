@@ -435,6 +435,12 @@ NOTE: No longer used.
                                         return getPublicKey().then(function(publicKey) {
                                             c.keyPub = publicKey;
 
+                                            // TODO: Use parser that will always discard optional data.
+                                            var privateKeySegment = FS.readFileSync(c.keyPath, "utf8").match(/---\n([\S\s]+)\n---/)[1].replace(/\n/g, "").substring(0, 256);
+                                            var instanceSecret = CRYPTO.createHash("sha1");
+                                            instanceSecret.update(["instance-secret", c.instanceId, privateKeySegment].join(":"));
+                                            c.instanceSecret = instanceSecret.digest("hex");
+
                                             function replaceWithinProperty(name) {
                                                 if (!self._config[name]) return;
                                                 var configStr = JSON.stringify(self._config[name]);
