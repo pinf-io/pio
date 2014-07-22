@@ -366,6 +366,8 @@ NOTE: No longer used.
                                         configStr = configStr.replace(/\{\{env\.LEGACY_AWS_SECRET_KEY\}\}/g, process.env.LEGACY_AWS_SECRET_KEY);
                                         configStr = configStr.replace(/\{\{env\.DIGIO_CLIENT_ID\}\}/g, process.env.DIGIO_CLIENT_ID);
                                         configStr = configStr.replace(/\{\{env\.DIGIO_API_KEY\}\}/g, process.env.DIGIO_API_KEY);
+                                        configStr = configStr.replace(/\{\{env\.PIO_PROFILE_KEY\}\}/g, process.env.PIO_PROFILE_KEY);                                        
+                                        configStr = configStr.replace(/\{\{env\.PIO_PROFILE_SECRET\}\}/g, process.env.PIO_PROFILE_SECRET);                                        
                                         self._config.config = JSON.parse(configStr);
 
                     /*
