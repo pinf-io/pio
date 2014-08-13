@@ -23,7 +23,7 @@ const NET = require("net");
 const WAITFOR = require("waitfor");
 const GLOB = require("glob");
 const SMI = require("smi.cli");
-
+const ESCAPE_REGEXP_COMPONENT = require("escape-regexp-component");
 
 
 
@@ -358,6 +358,15 @@ NOTE: No longer used.
 
                                         // TODO: Remvoe this when we use dynamic config system.
                                         var configStr = JSON.stringify(self._config.config);
+
+                                        var re = /\{\{env\.([^\}]+)\}\}/g;
+                                        var m = null;
+                                        while (m = re.exec(configStr)) {
+                                            if (typeof process.env[m[1]] === "string") {
+                                                configStr = configStr.replace(new RegExp(ESCAPE_REGEXP_COMPONENT(m[0]), "g"), process.env[m[1]]);
+                                            }
+                                        }
+                                        /*
                                         configStr = configStr.replace(/\{\{env\.DNSIMPLE_EMAIL\}\}/g, process.env.DNSIMPLE_EMAIL);
                                         configStr = configStr.replace(/\{\{env\.DNSIMPLE_TOKEN\}\}/g, process.env.DNSIMPLE_TOKEN);
                                         configStr = configStr.replace(/\{\{env\.AWS_ACCESS_KEY\}\}/g, process.env.AWS_ACCESS_KEY);
@@ -367,7 +376,8 @@ NOTE: No longer used.
                                         configStr = configStr.replace(/\{\{env\.DIGIO_CLIENT_ID\}\}/g, process.env.DIGIO_CLIENT_ID);
                                         configStr = configStr.replace(/\{\{env\.DIGIO_API_KEY\}\}/g, process.env.DIGIO_API_KEY);
                                         configStr = configStr.replace(/\{\{env\.PIO_PROFILE_KEY\}\}/g, process.env.PIO_PROFILE_KEY);                                        
-                                        configStr = configStr.replace(/\{\{env\.PIO_PROFILE_SECRET\}\}/g, process.env.PIO_PROFILE_SECRET);                                        
+                                        configStr = configStr.replace(/\{\{env\.PIO_PROFILE_SECRET\}\}/g, process.env.PIO_PROFILE_SECRET);
+                                        */
                                         self._config.config = JSON.parse(configStr);
 
                     /*
@@ -393,6 +403,12 @@ NOTE: No longer used.
                                         c.instanceId = c.instanceId || self._makeInstanceId();
 
                                         c.hostname = c.hostname || [c.namespace, "-", "i" + c.instanceId.substring(0, 7), "-", c.instance, ".", c.domain].join("");
+
+                                        var keyFilename = null;
+                                        if (c.keyPath && typeof c.keyPath === "string") {
+                                            // TODO: Add fingerprint to key id?
+                                            self._config.config["pio.vm"].keyId = PATH.basename(c.keyPath);
+                                        }
 
                                         c.keyPath = (
                                                         c.keyPath &&
