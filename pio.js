@@ -979,10 +979,13 @@ PIO.prototype.deploy = function(options) {
             self._state["pio.services"].order.forEach(function(serviceId, serviceIndex) {
                 done = Q.when(done, function() {
                     return self.ensure(serviceId).then(function() {
-                        return self.deploy({
-                            index: serviceIndex + 1,
-                            count: self._state["pio.services"].order.length
-                        }).then(function() {
+                        var opts = {};
+                        for (var name in options) {
+                            opts[name] = options[name];
+                        }
+                        opts.index = serviceIndex + 1;
+                        opts.count = self._state["pio.services"].order.length;
+                        return self.deploy(opts).then(function() {
                             return self._state["pio.deploy"]._ensure().then(function(_response) {
                                 if (_response[".status"] === "ready") {
                                     if (self._state["pio.cli.local"].verbose) {
@@ -1008,6 +1011,12 @@ PIO.prototype.deploy = function(options) {
 
     if (self._state["pio.cli.local"].verbose) {
         console.log(("VM login:", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentityFile=" + self._state["pio"].keyPath + " " + self._state["pio.vm"].user + "@" + self._state["pio.vm"].ip).bold);
+    }
+
+    if (options.buildCache === false) {
+        self._state["pio.cli.local"].buildCache = false;
+    } else {
+        self._state["pio.cli.local"].buildCache = true;
     }
 
     var optionalMessage = "";
