@@ -543,6 +543,11 @@ NOTE: No longer used.
                                 // for a dev package.
                                 function loadDevConfig(path, selector, callback) {
                                     return loadConfig(path).then(function() {
+
+                                        if (!self._config) {
+                                            return callback("You don't appear to be at the root of a pio system project. Your current path is: " + process.cwd());
+                                        }
+
                                         self._config.config["pio.cli.local"].plugins = {
                                             "ensure": [
                                                 "service:pio.service/module:pio.cli.local.ensure.plugin"
