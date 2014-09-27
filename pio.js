@@ -358,14 +358,16 @@ NOTE: No longer used.
 
                                         // TODO: Remvoe this when we use dynamic config system.
                                         var configStr = JSON.stringify(self._config.config);
-
+                                        var finalConfigString = configStr;
                                         var re = /\{\{env\.([^\}]+)\}\}/g;
                                         var m = null;
                                         while (m = re.exec(configStr)) {
                                             if (typeof process.env[m[1]] === "string") {
-                                                configStr = configStr.replace(new RegExp(ESCAPE_REGEXP_COMPONENT(m[0]), "g"), process.env[m[1]]);
+                                                finalConfigString = finalConfigString.replace(new RegExp(ESCAPE_REGEXP_COMPONENT(m[0]), "g"), process.env[m[1]]);
                                             }
                                         }
+                                        configStr = finalConfigString;
+
                                         /*
                                         configStr = configStr.replace(/\{\{env\.DNSIMPLE_EMAIL\}\}/g, process.env.DNSIMPLE_EMAIL);
                                         configStr = configStr.replace(/\{\{env\.DNSIMPLE_TOKEN\}\}/g, process.env.DNSIMPLE_TOKEN);
