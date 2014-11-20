@@ -420,33 +420,49 @@ NOTE: No longer used.
 
                                         function getPublicKey(verify) {
                                             var deferred = Q.defer();
+                                            function ensurePublicKey() {
+                                                var pubKeyPath = c.keyPath + ".pub";
+                                                return FS.exists(pubKeyPath, function(exists) {
+                                                    if (exists) {
+                                                        return FS.readFile(pubKeyPath, "utf8", function(err, data) {
+                                                            if (err) return deferred.reject(err);
+                                                            return deferred.resolve(data.match(/^(\S+\s+\S+)(\s+\S+)?\n?$/)[1]);
+                                                        });
+                                                    }
+                                                    if (verify === "public") {
+                                                        return deferred.reject(new Error("Still no public key after export!"));
+                                                    }
+                                                    console.log(("Generating public key from private key '" + c.keyPath + "' and store at: " + pubKeyPath).magenta);
+                                                    return SSH.exportPublicKeyFromPrivateKey(c.keyPath, pubKeyPath).then(function() {
+                                                        return getPublicKey("public");
+                                                    }).then(deferred.resolve).fail(deferred.reject);
+                                                });
+                                            }
+                                            function generateKeys () {
+                                                return OPENSSL.generateKeys({
+                                                    path: c.keyPath
+                                                }).then(function() {
+                                                    return getPublicKey("private");
+                                                }).then(deferred.resolve).fail(deferred.reject);                                                
+                                            }
                                             FS.exists(c.keyPath, function(keyExists) {
                                                 if (keyExists) {
-                                                    var pubKeyPath = c.keyPath + ".pub";
-                                                    return FS.exists(pubKeyPath, function(exists) {
-                                                        if (exists) {
-                                                            return FS.readFile(pubKeyPath, "utf8", function(err, data) {
-                                                                if (err) return deferred.reject(err);
-                                                                return deferred.resolve(data.match(/^(\S+\s+\S+)(\s+\S+)?\n?$/)[1]);
-                                                            });
-                                                        }
-                                                        if (verify === "public") {
-                                                            return deferred.reject(new Error("Still no public key after export!"));
-                                                        }
-                                                        console.log(("Generating public key from private key '" + c.keyPath + "' and store at: " + pubKeyPath).magenta);
-                                                        return SSH.exportPublicKeyFromPrivateKey(c.keyPath, pubKeyPath).then(function() {
-                                                            return getPublicKey("public");
-                                                        }).then(deferred.resolve).fail(deferred.reject);
-                                                    });
+                                                    return ensurePublicKey();
                                                 } else {
                                                     if (verify === "private") {
                                                         return deferred.reject(new Error("Still no private key after trying to create it!"));
                                                     }
-                                                    return OPENSSL.generateKeys({
-                                                        path: c.keyPath
-                                                    }).then(function() {
-                                                        return getPublicKey("private");
-                                                    }).then(deferred.resolve).fail(deferred.reject);
+                                                    if (!process.env.PIO_PROFILE_KEY) {
+                                                        return generateKeys();
+                                                    }
+                                                    c.keyPath = (process.env.HOME || "/home/ubuntu") + "/.ssh/" + process.env.PIO_PROFILE_KEY;
+                                                    return FS.exists(c.keyPath, function(keyExists) {
+                                                        if (keyExists) {
+                                                            return ensurePublicKey();
+                                                        } else {
+                                                            return generateKeys();
+                                                        }
+                                                    });
                                                 }
                                             });
                                             return deferred.promise;
