@@ -1237,12 +1237,19 @@ PIO.prototype.start = function() {
     return self._state["pio.deploy"]._call("_runCommands", {
         commands: commands,
         cwd: PATH.join(self._state["pio.service.deployment"].path, "live/install")
+    }, {
+        transport: ((self._state["pio.cli.local"].serviceSelector === "pio.server") ? "ssh" : null ),
+        pio: self
     }).then(function(response) {
         if (!response) {
             throw new Error("Remote commands exited with no response");
         }
         if (response.code !== 0)  {
             throw new Error("Remote commands exited with code: " + response.code);
+        }
+
+        if (self._state["pio.cli.local"].serviceSelector === "pio.server") {
+            return;
         }
 
         console.log(("Confirming service is working using status call ...").cyan);
@@ -1278,6 +1285,9 @@ PIO.prototype.stop = function() {
     return self._state["pio.deploy"]._call("_runCommands", {
         commands: commands,
         cwd: PATH.join(self._state["pio.service.deployment"].path, "live/install")
+    }, {
+        transport: ((self._state["pio.cli.local"].serviceSelector === "pio.server") ? "ssh" : null ),
+        pio: self
     }).then(function(response) {
         if (!response) {
             throw new Error("Remote commands exited with no response");
@@ -1300,11 +1310,44 @@ PIO.prototype.stop = function() {
     });
 }
 
-PIO.prototype.restart = function() {
+PIO.prototype.restart = function(options) {
     var self = this;
 
+    options = options || {};
+
     if (!self._state["pio.cli.local"].serviceSelector) {
-        return Q.reject("Service must be selected!");
+        // Restart all services.
+        return self._ready.then(function() {
+            if (self._state["pio.cli.local"].verbose) {
+                console.log("Restarting services sequentially according to 'depends' order:".cyan);
+            }
+            var done = Q.resolve();
+            self._state["pio.services"].order.forEach(function(serviceId, serviceIndex) {
+                done = Q.when(done, function() {
+                    return self.ensure(serviceId).then(function() {
+                        var opts = {};
+                        for (var name in options) {
+                            opts[name] = options[name];
+                        }
+                        opts.index = serviceIndex + 1;
+                        opts.count = self._state["pio.services"].order.length;
+                        return self.restart(opts).then(function() {
+/*                            
+                            return self._state["pio.deploy"]._ensure().then(function(_response) {
+                                if (_response[".status"] === "ready") {
+                                    if (self._state["pio.cli.local"].verbose) {
+                                        console.log("Switching to using dnode transport where possible!".green);
+                                    }
+                                }
+                                return;
+                            });
+*/                            
+                        });
+                    });
+                });
+            });
+            return done;
+        });
     }
 
     var commands = [];
@@ -1319,6 +1362,9 @@ PIO.prototype.restart = function() {
     return self._state["pio.deploy"]._call("_runCommands", {
         commands: commands,
         cwd: PATH.join(self._state["pio.service.deployment"].path, "live/install")
+    }, {
+        transport: ((self._state["pio.cli.local"].serviceSelector === "pio.server") ? "ssh" : null ),
+        pio: self
     }).then(function(response) {
         if (!response) {
             throw new Error("Remote commands exited with no response");
