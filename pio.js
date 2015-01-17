@@ -1350,6 +1350,13 @@ PIO.prototype.restart = function(options) {
         });
     }
 
+    if (self._state["pio.service"].enabled === false) {
+        if (self._state["pio.cli.local"].verbose) {
+            console.log(("Skip restart for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
+        }
+        return Q.resolve(null);
+    }
+
     var commands = [];
     commands.push('. /opt/bin/activate.sh');
     for (var name in self._state["pio.service.deployment"].env) {
