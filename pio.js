@@ -797,9 +797,7 @@ function orderServices(services) {
             id: serviceId
         });
     }
-    var resolved = {
-        hub: true
-    };
+    var resolved = {};
     var changed = true;
     var sorted = [];
 
@@ -836,10 +834,13 @@ function orderServices(services) {
         plugins.forEach(function(plugin) {
             delete plugin.config;
             plugin.consumes.forEach(function(name) {
-                if (unresolved[name] == false)
+                if (unresolved[name] == false) {
                     return;
-                if (!unresolved[name])
+                }
+                if (!unresolved[name]) {
+console.log("unresolved", name, "for", plugin);
                     unresolved[name] = [];
+                }
                 unresolved[name].push(plugin.packagePath);
             });
             plugin.provides.forEach(function(name) {
@@ -852,6 +853,7 @@ function orderServices(services) {
                 delete unresolved[name];
         });
 
+        console.error("services", Object.keys(services).length, services);
         console.error("Could not resolve dependencies of these plugins:", plugins);
         console.error("Resolved services:", Object.keys(resolved));
         console.error("Missing services:", unresolved);
