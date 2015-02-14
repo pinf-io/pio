@@ -1220,6 +1220,58 @@ PIO.prototype.status = function() {
     });   
 }
 
+PIO.prototype.run = function (options) {
+    var self = this;
+
+    if (!self._state["pio.cli.local"].serviceSelector) {
+        return Q.reject(new Error("Service must be set!"));
+    }
+
+    if (self._state["pio.service"].enabled === false && !(self._state["pio.cli.local"].serviceSelector && options.local)) {
+        console.log(("Skip run for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
+        return Q.resolve(null);
+    }
+
+    // TODO: Detect how tests should be run and don't always assume npm.
+
+    function npmRun(callback) {
+        var basePath = self._state["pio.service"].originalPath;
+        console.log(("Calling `npm test` for: " + basePath).magenta);
+        var proc = SPAWN("npm", [
+            "start"
+        ], {
+            cwd: basePath
+        });
+        proc.stdout.on('data', function (data) {
+            process.stdout.write(data);
+        });
+        proc.stderr.on('data', function (data) {
+            process.stderr.write(data);
+        });
+        return proc.on('close', function (code) {
+            if (code !== 0) {
+                console.error("ERROR: `npm test` exited with code '" + code + "'");
+                return callback(new Error("`npm test` script exited with code '" + code + "'"));
+            }
+            console.log(("`npm test` for '" + basePath + "' done!").green);
+            return callback(null, {success: true});
+        });
+    }
+
+    function runCycle() {
+        return Q.denodeify(npmRun)().fail(function (err) {
+            if (!options.cycle) throw err;
+            console.error(("Ignoring error due to cycle: " + err.stack).red);
+        }).then(function() {
+            if (!options.cycle) return;
+            console.log("Running tests again in '" + options.cycle + "' seconds ...");
+            return Q.delay(options.cycle * 1000).then(runCycle);
+        });
+    }
+
+    return runCycle();
+}
+
 PIO.prototype.start = function() {
     var self = this;
 
