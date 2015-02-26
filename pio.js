@@ -1236,7 +1236,7 @@ PIO.prototype.run = function (options) {
 
     function npmRun(callback) {
         var basePath = self._state["pio.service"].originalPath;
-        console.log(("Calling `npm test` for: " + basePath).magenta);
+        console.log(("Calling `npm start` for: " + basePath).magenta);
         var proc = SPAWN("npm", [
             "start"
         ], {
@@ -1250,10 +1250,10 @@ PIO.prototype.run = function (options) {
         });
         return proc.on('close', function (code) {
             if (code !== 0) {
-                console.error("ERROR: `npm test` exited with code '" + code + "'");
+                console.error("ERROR: `npm start` exited with code '" + code + "'");
                 return callback(new Error("`npm test` script exited with code '" + code + "'"));
             }
-            console.log(("`npm test` for '" + basePath + "' done!").green);
+            console.log(("`npm start` for '" + basePath + "' done!").green);
             return callback(null, {success: true});
         });
     }
