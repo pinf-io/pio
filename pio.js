@@ -723,7 +723,7 @@ function callPlugins(pio, method, state, options) {
 }
 
 
-function locateServices(pio) {
+function locateServices(pio, options) {
     var services = {};
     var serviceGroups = {};
     for (var serviceGroup in pio._config.services) {
@@ -741,7 +741,7 @@ function locateServices(pio) {
         var waitfor = WAITFOR.parallel(function(err) {
             if (err) return callback(err);
             return callback(null, services);
-        })
+        });
         for (var serviceId in pio._locatedServices) {
             if (serviceGroups[serviceId]) {
                 services[serviceId] = {
@@ -857,6 +857,7 @@ console.log("unresolved", name, "for", plugin);
         console.error("Could not resolve dependencies of these plugins:", plugins);
         console.error("Resolved services:", Object.keys(resolved));
         console.error("Missing services:", unresolved);
+        console.log("NOTICE: Did you declare '" + Object.keys(unresolved) + "' in 'services' config?");
         throw new Error("Could not resolve dependencies");
     }
     return sorted;
@@ -889,7 +890,7 @@ PIO.prototype.ensure = function(serviceSelector, options) {
         verbose: (self._state && self._state["pio.cli.local"] && (self._state["pio.cli.local"].verbose || self._state["pio.cli.local"].debug)) || false,
         silent: (self._state && self._state["pio.cli.local"] && self._state["pio.cli.local"].silent) || false
     }
-    return locateServices(self).then(function(services) {
+    return locateServices(self, options).then(function(services) {
         var state = options.state || {};
         delete options.state;
         state = DEEPMERGE({
@@ -1236,40 +1237,79 @@ PIO.prototype.run = function (options) {
 
     function npmRun(callback) {
         var basePath = self._state["pio.service"].originalPath;
-        console.log(("Calling `npm start` for: " + basePath).magenta);
-        var proc = SPAWN("npm", [
-            "start"
-        ], {
-            cwd: basePath
-        });
-        proc.stdout.on('data', function (data) {
-            process.stdout.write(data);
-        });
-        proc.stderr.on('data', function (data) {
-            process.stderr.write(data);
+
+        var command = "npm start";
+        if (self._state["pio.service"].scripts.run) {
+            command = "npm run-script run";
+        }
+
+        var env = {};
+        for (var name in process.env) {
+            env[name] = process.env[name];
+        }
+        for (var name in self._state["pio.service"].env) {
+            env[name] = self._state["pio.service"].env[name];
+        }
+
+        console.log(("Calling `" + command + "` for: " + basePath).magenta);
+        var proc = SPAWN(command.split(" ").shift(), command.split(" ").slice(1), {
+            cwd: basePath,
+            env: env,
+            stdio: "inherit"
         });
         return proc.on('close', function (code) {
             if (code !== 0) {
-                console.error("ERROR: `npm start` exited with code '" + code + "'");
-                return callback(new Error("`npm test` script exited with code '" + code + "'"));
+                console.error("ERROR: `" + command + "` exited with code '" + code + "'");
+                return callback(new Error("`" + command + "` script exited with code '" + code + "'"));
             }
-            console.log(("`npm start` for '" + basePath + "' done!").green);
+            console.log(("`" + command + "` for '" + basePath + "' done!").green);
             return callback(null, {success: true});
         });
     }
 
-    function runCycle() {
-        return Q.denodeify(npmRun)().fail(function (err) {
-            if (!options.cycle) throw err;
-            console.error(("Ignoring error due to cycle: " + err.stack).red);
-        }).then(function() {
-            if (!options.cycle) return;
-            console.log("Running tests again in '" + options.cycle + "' seconds ...");
-            return Q.delay(options.cycle * 1000).then(runCycle);
+    function runCycle (count) {
+
+        // TODO: Instead of scheduling window to open on timer we should be listening
+        //       for output from NPM and open browser once server is announced started.
+        function openBrowser () {
+            if (count > 0) return Q.resolve();
+            if (!options.open) return Q.resolve();
+            var deferred = Q.defer();
+            setTimeout(function () {
+                // TODO: Only open if not already open.
+                // TODO: Optionally close browser when `run` call ends.
+                ASSERT.notEqual(typeof self._state["pio.service"].env.PORT, "undefined", "self._state['pio.service'].env.PORT' must be set");
+                var command = "open http://localhost:" + self._state["pio.service"].env.PORT + "/";
+                console.log(("Calling command: " + command).magenta);
+                console.log("NOTE: If this does not exit it needs to be fixed for your OS.");
+                return EXEC(command, function(err, stdout, stderr) {
+                    if (err) {
+                        console.error(stdout);
+                        console.error(stderr);
+                        return deferred.reject(err);
+                    }
+                    console.log("Browser opened!");
+                    return deferred.resolve();
+                });
+            }, 1000);
+            return deferred.promise;
+        }
+
+        return openBrowser().then(function () {
+            return Q.denodeify(npmRun)().fail(function (err) {
+                if (!options.cycle) throw err;
+                console.error(("Ignoring error due to cycle: " + err.stack).red);
+            }).then(function() {
+                if (!options.cycle) return;
+                console.log("Running tests again in '" + options.cycle + "' seconds ...");
+                return Q.delay(options.cycle * 1000).then(function () {
+                    return runCycle(count + 1);
+                });
+            });
         });
     }
 
-    return runCycle();
+    return runCycle(0);
 }
 
 PIO.prototype.start = function() {
@@ -1534,8 +1574,10 @@ PIO.prototype.test = function(options) {
     });
 }
 
-PIO.prototype.publish = function() {
+PIO.prototype.publish = function (options) {
     var self = this;
+
+    options = options || {};
 
     if (!self._state["pio.cli.local"].serviceSelector) {
         // Deploy all services.
@@ -1572,6 +1614,44 @@ PIO.prototype.publish = function() {
     if (self._state["pio.service"].enabled === false) {
         console.log(("Skip publish for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
         return Q.resolve(null);
+    }
+
+    if (options.local) {
+
+        // TODO: Instead of checking for local option here the declared plugin should already be swapped
+        //       out (through config) so we don't need to do anything here.
+        // TODO: Detect how publish should be run and don't always assume npm.
+
+        function npmPublish (callback) {
+            var basePath = self._state["pio.service"].originalPath;
+            console.log(("Calling `npm run-script publish` for: " + basePath).magenta);
+            var proc = SPAWN("npm", [
+                "run-script",
+                "publish"
+            ].concat(options.args || []), {
+                cwd: basePath
+            });
+            proc.stdout.on('data', function (data) {
+                process.stdout.write(data);
+            });
+            proc.stderr.on('data', function (data) {
+                process.stderr.write(data);
+            });
+            return proc.on('close', function (code) {
+                if (code !== 0) {
+                    console.error("ERROR: `npm run-script publish` exited with code '" + code + "'");
+                    return callback(new Error("`npm run-script publish` script exited with code '" + code + "'"));
+                }
+                console.log(("`npm run-script publish` for '" + basePath + "' done!").green);
+                return callback(null, {success: true});
+            });
+        }
+
+        function runLocalPublish() {
+            return Q.denodeify(npmPublish)();
+        }
+
+        return runLocalPublish();
     }
 
     return callPlugins(self, "publish", self._state).then(function(state) {
