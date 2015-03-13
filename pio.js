@@ -1233,83 +1233,104 @@ PIO.prototype.run = function (options) {
         return Q.resolve(null);
     }
 
-    // TODO: Detect how tests should be run and don't always assume npm.
+    if (options.local) {
 
-    function npmRun(callback) {
-        var basePath = self._state["pio.service"].originalPath;
+        // TODO: Detect how tests should be run and don't always assume npm.
 
-        var command = "npm start";
-        if (self._state["pio.service"].scripts.run) {
-            command = "npm run-script run";
-        }
+        function npmRun(callback) {
+            var basePath = self._state["pio.service"].originalPath;
 
-        var env = {};
-        for (var name in process.env) {
-            env[name] = process.env[name];
-        }
-        for (var name in self._state["pio.service"].env) {
-            env[name] = self._state["pio.service"].env[name];
-        }
-
-        console.log(("Calling `" + command + "` for: " + basePath).magenta);
-        var proc = SPAWN(command.split(" ").shift(), command.split(" ").slice(1), {
-            cwd: basePath,
-            env: env,
-            stdio: "inherit"
-        });
-        return proc.on('close', function (code) {
-            if (code !== 0) {
-                console.error("ERROR: `" + command + "` exited with code '" + code + "'");
-                return callback(new Error("`" + command + "` script exited with code '" + code + "'"));
+            var command = "npm start";
+            if (self._state["pio.service"].scripts.run) {
+                command = "npm run-script run";
             }
-            console.log(("`" + command + "` for '" + basePath + "' done!").green);
-            return callback(null, {success: true});
-        });
-    }
 
-    function runCycle (count) {
+            var env = {};
+            for (var name in process.env) {
+                env[name] = process.env[name];
+            }
+            for (var name in self._state["pio.service"].env) {
+                env[name] = self._state["pio.service"].env[name];
+            }
 
-        // TODO: Instead of scheduling window to open on timer we should be listening
-        //       for output from NPM and open browser once server is announced started.
-        function openBrowser () {
-            if (count > 0) return Q.resolve();
-            if (!options.open) return Q.resolve();
-            var deferred = Q.defer();
-            setTimeout(function () {
-                // TODO: Only open if not already open.
-                // TODO: Optionally close browser when `run` call ends.
-                ASSERT.notEqual(typeof self._state["pio.service"].env.PORT, "undefined", "self._state['pio.service'].env.PORT' must be set");
-                var command = "open http://localhost:" + self._state["pio.service"].env.PORT + "/";
-                console.log(("Calling command: " + command).magenta);
-                console.log("NOTE: If this does not exit it needs to be fixed for your OS.");
-                return EXEC(command, function(err, stdout, stderr) {
-                    if (err) {
-                        console.error(stdout);
-                        console.error(stderr);
-                        return deferred.reject(err);
-                    }
-                    console.log("Browser opened!");
-                    return deferred.resolve();
-                });
-            }, 1000);
-            return deferred.promise;
+            if (options.dev) {
+                // POLICY: Setting `DEV` environment variable (initially to `1`) enables
+                //         debug mode which enables debugging and loads original sources just in time.
+                env.DEV = "1";
+            }
+
+            if (options.deeperArgs && options.deeperArgs.length > 0) {
+                command += " -- " + options.deeperArgs.join(" ");
+            }
+
+            console.log(("Calling `" + command + "` (cwd: " + basePath + ")").magenta);
+
+            var proc = SPAWN(command.split(" ").shift(), command.split(" ").slice(1), {
+                cwd: basePath,
+                env: env,
+                stdio: "inherit"
+            });
+            return proc.on('close', function (code) {
+                if (code !== 0) {
+                    console.error("ERROR: `" + command + "` exited with code '" + code + "'");
+                    return callback(new Error("`" + command + "` script exited with code '" + code + "'"));
+                }
+                console.log(("`" + command + "` for '" + basePath + "' done!").green);
+                return callback(null, {success: true});
+            });
         }
 
-        return openBrowser().then(function () {
-            return Q.denodeify(npmRun)().fail(function (err) {
-                if (!options.cycle) throw err;
-                console.error(("Ignoring error due to cycle: " + err.stack).red);
-            }).then(function() {
-                if (!options.cycle) return;
-                console.log("Running tests again in '" + options.cycle + "' seconds ...");
-                return Q.delay(options.cycle * 1000).then(function () {
-                    return runCycle(count + 1);
+        function runCycle (count) {
+
+            // TODO: Instead of scheduling window to open on timer we should be listening
+            //       for output from NPM and open browser once server is announced started.
+            function openBrowser () {
+                if (count > 0) return Q.resolve();
+                if (!options.open) return Q.resolve();
+                var deferred = Q.defer();
+                setTimeout(function () {
+                    // TODO: Only open if not already open.
+                    // TODO: Optionally close browser when `run` call ends.
+                    ASSERT.notEqual(typeof self._state["pio.service"].env.PORT, "undefined", "self._state['pio.service'].env.PORT' must be set");
+                    var command = "open http://localhost:" + self._state["pio.service"].env.PORT + "/";
+                    console.log(("Calling command: " + command).magenta);
+                    console.log("NOTE: If this does not exit it needs to be fixed for your OS.");
+                    return EXEC(command, function(err, stdout, stderr) {
+                        if (err) {
+                            console.error(stdout);
+                            console.error(stderr);
+                            return deferred.reject(err);
+                        }
+                        console.log("Browser opened!");
+                        return deferred.resolve();
+                    });
+                }, 1000);
+                return deferred.promise;
+            }
+
+            return openBrowser().then(function () {
+                return Q.denodeify(npmRun)().fail(function (err) {
+                    if (!options.cycle) throw err;
+                    console.error(("Ignoring error due to cycle: " + err.stack).red);
+                }).then(function() {
+                    if (!options.cycle) return;
+                    console.log("Running tests again in '" + options.cycle + "' seconds ...");
+                    return Q.delay(options.cycle * 1000).then(function () {
+                        return runCycle(count + 1);
+                    });
                 });
             });
-        });
+        }
+
+        return runCycle(0);
     }
 
-    return runCycle(0);
+    return callPlugins(self, "run", self._state).then(function(state) {
+
+        console.log(("Run of '" + self._state["pio.service"].id + "' done!").green);
+
+        return state;
+    });
 }
 
 PIO.prototype.start = function() {
@@ -1657,6 +1678,88 @@ PIO.prototype.publish = function (options) {
     return callPlugins(self, "publish", self._state).then(function(state) {
 
         console.log(("Publish of '" + self._state["pio.service"].id + "' done!").green);
+
+        return state;
+    });
+}
+
+PIO.prototype.bundle = function (options) {
+    var self = this;
+
+    options = options || {};
+
+    if (!self._state["pio.cli.local"].serviceSelector) {
+        // Deploy all services.
+
+        return self._ready.then(function() {
+
+            console.log("Bundling all services:".cyan);
+
+            var states = [];
+            var done = Q.resolve();
+            Object.keys(self._state["pio.services"].services).forEach(function(serviceId) {
+                done = Q.when(done, function() {
+                    return self.ensure(serviceId).then(function() {
+                        return self.bundle().then(function(state) {
+                            if (state !== null) {
+                                states.push(state);
+                            }
+                            return;
+                        });
+                    });
+                });
+            });
+
+            return done;
+        });
+    }
+
+    if (self._state["pio.service"].enabled === false) {
+        console.log(("Skip bundle for service '" + self._state["pio.service"].id + "' from group '" + self._state["pio.service"].group + "'. It is disabled!").yellow);
+        return Q.resolve(null);
+    }
+
+    if (options.local) {
+
+        // TODO: Instead of checking for local option here the declared plugin should already be swapped
+        //       out (through config) so we don't need to do anything here.
+        // TODO: Detect how bundle should be run and don't always assume npm.
+
+        function npmBundle (callback) {
+            var basePath = self._state["pio.service"].originalPath;
+            console.log(("Calling `npm run-script bundle` for: " + basePath).magenta);
+            var proc = SPAWN("npm", [
+                "run-script",
+                "bundle"
+            ].concat(options.args || []), {
+                cwd: basePath
+            });
+            proc.stdout.on('data', function (data) {
+                process.stdout.write(data);
+            });
+            proc.stderr.on('data', function (data) {
+                process.stderr.write(data);
+            });
+            return proc.on('close', function (code) {
+                if (code !== 0) {
+                    console.error("ERROR: `npm run-script bundle` exited with code '" + code + "'");
+                    return callback(new Error("`npm run-script bundle` script exited with code '" + code + "'"));
+                }
+                console.log(("`npm run-script bundle` for '" + basePath + "' done!").green);
+                return callback(null, {success: true});
+            });
+        }
+
+        function runLocalBundle() {
+            return Q.denodeify(npmBundle)();
+        }
+
+        return runLocalBundle();
+    }
+
+    return callPlugins(self, "bundle", self._state).then(function(state) {
+
+        console.log(("Bundle of '" + self._state["pio.service"].id + "' done!").green);
 
         return state;
     });
