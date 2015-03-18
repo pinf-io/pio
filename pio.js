@@ -247,7 +247,9 @@ var PIO = module.exports = function(seedPath) {
                                     cwd: basePath
                                 }).then(function(files) {
                                     files.forEach(function(filepath) {
-                                        services[filepath.split("/").pop()] = PATH.join(basePath, filepath);
+                                        var serviceId = filepath.split("/").pop();
+                                        if (services[serviceId]) return;
+                                        services[serviceId] = PATH.join(basePath, filepath);
                                     });
                                     self._locatedServices = services;
                                     return;

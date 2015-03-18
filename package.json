@@ -17,7 +17,8 @@
     "deepmerge": "~0.2.7",
     "waitfor": "~0.1.3",
     "nexpect": "~0.3.0",
-    "smi.cli": "0.x"
+    "smi.cli": "0.x",
+    "org.pinf.lib": "0.1.x"
   },
   "config": {
       "pio.deploy.converter": {
