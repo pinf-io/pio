@@ -248,9 +248,13 @@ var PIO = module.exports = function(seedPath) {
                                 }).then(function(files) {
                                     files.forEach(function(filepath) {
                                         var serviceId = filepath.split("/").pop();
-                                        if (services[serviceId]) return;
+                                        if (
+                                            services[serviceId] &&
+                                            serviceId === PATH.basename(PATH.join(basePath, filepath))
+                                        ) return;
                                         services[serviceId] = PATH.join(basePath, filepath);
                                     });
+//console.log("services", services);                                    
                                     self._locatedServices = services;
                                     return;
                                 });
@@ -791,13 +795,15 @@ function locateServices(pio, options) {
 // @source https://github.com/c9/architect/blob/567b7c034d7644a2cc0405817493b451b01975fa/architect.js#L332
 function orderServices(services) {
     var plugins = [];
+    var pluginsById = {};
     for (var serviceId in services) {
-        plugins.push({
+        pluginsById[serviceId] = {
             packagePath: services[serviceId].path,
             provides: [ serviceId ],
             consumes: (services[serviceId].descriptor && services[serviceId].descriptor.depends) || [],
             id: serviceId
-        });
+        }
+        plugins.push(JSON.parse(JSON.stringify(pluginsById[serviceId])));
     }
     var resolved = {};
     var changed = true;
@@ -860,6 +866,28 @@ console.log("unresolved", name, "for", plugin);
         console.error("Resolved services:", Object.keys(resolved));
         console.error("Missing services:", unresolved);
         console.log("NOTICE: Did you declare '" + Object.keys(unresolved) + "' in 'services' config?");
+
+        function showChildHierarchy (pkgId, pkg, level) {
+            if (!level) level = 0;
+            if (!pkg) {
+                console.log("Package '" + pkgId + "' not found!");
+                return;
+            }
+            var prefix = [];
+            for (var i=0 ; i<level ; i++) {
+                prefix.push("  ");
+            }
+            console.log(prefix.join("") + pkg.id);
+            if (!pkg.consumes) return;
+            pkg.consumes.forEach(function (pkgId) {
+                return showChildHierarchy(pkgId, pluginsById[pkgId], level + 1);
+            });
+        }
+        console.log("Service hierarchy:");
+        Object.keys(unresolved).forEach(function (pkgId) {
+            showChildHierarchy(pkgId, pluginsById[pkgId]);
+        });
+
         throw new Error("Could not resolve dependencies");
     }
     return sorted;
